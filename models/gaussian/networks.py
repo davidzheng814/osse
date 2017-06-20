@@ -5,16 +5,25 @@ import torch.optim as optim
 import torch.utils.data
 from torch.autograd import Variable
 
+def get_encoder(args, x_size, y_size):
+    if args.model == 'ff':
+        return EncNet(args.enc_size, x_size, y_size, use_lstm=False)
+    elif args.model == 'lstm':
+        return EncNet(args.enc_size, x_size, y_size, use_lstm=True)
+    elif args.model == 'lincom':
+        return LinComEncNet(args.enc_size, x_size, y_size)
+
 """ MODELS """
 
 class PredictNet(nn.Module):
     def __init__(self, enc_size, x_size, y_size):
         super(PredictNet, self).__init__()
         self.lin = nn.Linear(enc_size, x_size * y_size)
+        self.x_size, self.y_size = x_size, y_size
 
     def forward(self, x, enc):
         x = x.unsqueeze(1)
-        W = self.lin(enc).view([-1, x_size, y_size])
+        W = self.lin(enc).view([-1, self.x_size, self.y_size])
         h = torch.bmm(x, W).squeeze()
 
         return h, W
@@ -23,6 +32,7 @@ class PredictNet(nn.Module):
 class EncNet(nn.Module):
     def __init__(self, enc_size, x_size, y_size, use_lstm=False):
         super(EncNet, self).__init__()
+        self.use_lstm = use_lstm
 
         enc_weights = [enc_size] * 3
         enc_weights = [x_size+y_size+enc_size] + enc_weights
@@ -37,7 +47,7 @@ class EncNet(nn.Module):
 
     def forward(self, x, y, enc0):
         h = torch.cat((x, y, enc0), dim=1)
-        if use_lstm: # currently not working
+        if self.use_lstm: # currently not working
             # h1, c1 = self.lstm1(xy, (h0, c0))
             # h2, c2 = self.lstm2(h1, (h1, c1))
             # return h2, c2
