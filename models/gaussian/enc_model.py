@@ -16,6 +16,8 @@ import torch.optim as optim
 import torch.utils.data
 from torch.autograd import Variable
 
+import networks
+
 """ CONFIG """
 
 ROOT = '../..'
@@ -47,6 +49,8 @@ parser.add_argument('--weight-ind', type=int, default=-1,
 parser.add_argument('--use-lstm', action="store_true", help='Use LSTM for Enc Model')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='disables CUDA training')
+parser.add_argument('--model', type=str, default='lstm',
+                    help='model to use (lstm/lincom)')
 parser.add_argument('--loss-fn', type=str, default='mse',
                     help='path to training data')
 
@@ -106,54 +110,6 @@ class GaussianDataset(torch.utils.data.Dataset):
     def __getitem__(self, key):
         return self.data[key]
 
-
-""" MODELS """
-
-class PredictNet(nn.Module):
-    def __init__(self, enc_size, x_size, y_size):
-        super(PredictNet, self).__init__()
-        self.lin = nn.Linear(enc_size, x_size * y_size)
-
-    def forward(self, x, enc):
-        x = x.unsqueeze(1)
-        W = self.lin(enc).view([-1, x_size, y_size])
-        h = torch.bmm(x, W).squeeze()
-
-        return h, W
-
-
-class EncNet(nn.Module):
-    def __init__(self, enc_size, x_size, y_size):
-        super(EncNet, self).__init__()
-
-        enc_weights = [enc_size] * 3
-        enc_weights = [x_size+y_size+enc_size] + enc_weights
-        # inp_weights = [x_size+y_size] + [enc_size] * 4
-
-        if args.use_lstm:
-            self.lstm1 = nn.LSTMCell(x_size+y_size, enc_size)
-            self.lstm2 = nn.LSTMCell(enc_size, enc_size)
-        else:
-            self.enc_linears = nn.ModuleList([
-                nn.Linear(inp, out) for inp, out in zip(enc_weights[:-1], enc_weights[1:])])
-
-    def forward(self, x, y, enc0):
-        h = torch.cat((x, y, enc0), dim=1)
-        if args.use_lstm: # currently not working
-            # h1, c1 = self.lstm1(xy, (h0, c0))
-            # h2, c2 = self.lstm2(h1, (h1, c1))
-            # return h2, c2
-            pass
-        else:
-            for i, lin in enumerate(self.enc_linears):
-                if i == len(self.enc_linears) - 1: 
-                    h = lin(h)
-                else:
-                    h = F.relu(lin(h))
-
-            return h
-
-
 """ INITIALIZATIONS """
 
 kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
@@ -165,8 +121,8 @@ test_loader = torch.utils.data.DataLoader(test_set,
     batch_size=args.batch_size, shuffle=False, **kwargs)
 x_size, y_size = train_set.x_size, train_set.y_size
 
-pred_model = PredictNet(args.enc_size, x_size, y_size)
-enc_model = EncNet(args.enc_size, x_size, y_size)
+pred_model = networks.PredictNet(args.enc_size, x_size, y_size)
+enc_model = networks.EncNet(args.enc_size, x_size, y_size, args.use_lstm)
 if args.cuda:
     pred_model.cuda()
     enc_model.cuda()
