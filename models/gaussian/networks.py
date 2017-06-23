@@ -7,17 +7,23 @@ from torch.autograd import Variable
 
 def get_encoder(model, args, x_size, y_size):
     if model == 'ff':
-        return EncNet(args.enc_size, x_size, y_size, use_lstm=False)
+        return BasicEncNet(args.enc_size, x_size, y_size, use_lstm=False)
     elif model == 'lstm':
-        return EncNet(args.enc_size, x_size, y_size, use_lstm=True)
+        return BasicEncNet(args.enc_size, x_size, y_size, use_lstm=True)
     elif model == 'lincom':
         return LinComEncNet(args.enc_size, x_size, y_size)
+    raise RuntimeError("Encoder " + model + " not found!")
+
+def get_predictor(model, args, x_size, y_size):
+    if model == 'basic':
+        return BasicPredictNet(args.enc_size, x_size, y_size)
+    raise RuntimeError("Predictor " + model + " not found!")
 
 """ MODELS """
 
-class PredictNet(nn.Module):
+class BasicPredictNet(nn.Module):
     def __init__(self, enc_size, x_size, y_size):
-        super(PredictNet, self).__init__()
+        super(BasicPredictNet, self).__init__()
         self.lin = nn.Linear(enc_size, x_size * y_size)
         self.x_size, self.y_size = x_size, y_size
 
@@ -29,9 +35,9 @@ class PredictNet(nn.Module):
         return h, W
 
 
-class EncNet(nn.Module):
+class BasicEncNet(nn.Module):
     def __init__(self, enc_size, x_size, y_size, use_lstm=False):
-        super(EncNet, self).__init__()
+        super(BasicEncNet, self).__init__()
         self.use_lstm = use_lstm
 
         enc_weights = [enc_size] * 3
@@ -51,7 +57,7 @@ class EncNet(nn.Module):
             # h1, c1 = self.lstm1(xy, (h0, c0))
             # h2, c2 = self.lstm2(h1, (h1, c1))
             # return h2, c2
-            pass
+            raise NotImplementedError
         else:
             for i, lin in enumerate(self.enc_linears):
                 if i == len(self.enc_linears) - 1: 

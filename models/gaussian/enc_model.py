@@ -48,8 +48,10 @@ parser.add_argument('--weight-ind', type=int, default=-1,
                     help='If set, print weight matrix of test set at ind')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='disables CUDA training')
-parser.add_argument('--model', type=str, default='ff',
-                    help='model to use (ff/lstm/lincom)')
+parser.add_argument('--enc-model', type=str, default='ff',
+                    help='encoder model to use (ff/lstm/lincom)')
+parser.add_argument('--pred-model', type=str, default='basic',
+                    help='predictive model to use (basic)')
 parser.add_argument('--loss-fn', type=str, default='mse',
                     help='path to training data')
 
@@ -120,8 +122,8 @@ test_loader = torch.utils.data.DataLoader(test_set,
     batch_size=args.batch_size, shuffle=False, **kwargs)
 x_size, y_size = train_set.x_size, train_set.y_size
 
-pred_model = networks.PredictNet(args.enc_size, x_size, y_size)
-enc_model = networks.get_encoder(args.model, args, x_size, y_size)
+pred_model = networks.get_predictor(args.pred_model, args, x_size, y_size)
+enc_model = networks.get_encoder(args.enc_model, args, x_size, y_size)
 if args.cuda:
     pred_model.cuda()
     enc_model.cuda()
