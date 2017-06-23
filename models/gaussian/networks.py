@@ -10,7 +10,7 @@ def get_encoder(model, args, x_size, y_size):
         return BasicEncNet(args.enc_size, x_size, y_size, use_lstm=False)
     elif model == 'lstm':
         return BasicEncNet(args.enc_size, x_size, y_size, use_lstm=True)
-    elif model == 'lincom':
+    elif model == 'parallel':
         return LinComEncNet(args.enc_size, x_size, y_size)
     raise RuntimeError("Encoder " + model + " not found!")
 

@@ -47,7 +47,7 @@ parser.add_argument('--weight-ind', type=int, default=-1,
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='disables CUDA training')
 parser.add_argument('--enc-model', type=str, default='ff',
-                    help='encoder model to use (ff/lstm/lincom)')
+                    help='encoder model to use (ff/lstm/parallel)')
 parser.add_argument('--pred-model', type=str, default='basic',
                     help='predictive model to use (basic)')
 parser.add_argument('--loss-fn', type=str, default='mse',
