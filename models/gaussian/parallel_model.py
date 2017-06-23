@@ -175,7 +175,8 @@ def test_epoch(epoch):
                 else:
                     loss = mse(pred, y)
                 if i == args.start_test_ind:
-                    W_loss += l1(Variable(test_set.weights[batch_idx]), W).data[0]
+                    #W_loss += l1(Variable(test_set.weights[batch_idx]), W).data[0]
+                    pass
 
                 loss = l1(pred, y)
                 tot_loss += loss.data[0]
