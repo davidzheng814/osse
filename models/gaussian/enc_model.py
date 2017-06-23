@@ -121,7 +121,7 @@ test_loader = torch.utils.data.DataLoader(test_set,
 x_size, y_size = train_set.x_size, train_set.y_size
 
 pred_model = networks.PredictNet(args.enc_size, x_size, y_size)
-enc_model = networks.get_encoder(args, x_size, y_size)
+enc_model = networks.get_encoder(args.model, args, x_size, y_size)
 if args.cuda:
     pred_model.cuda()
     enc_model.cuda()

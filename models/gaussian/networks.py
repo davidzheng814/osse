@@ -5,12 +5,12 @@ import torch.optim as optim
 import torch.utils.data
 from torch.autograd import Variable
 
-def get_encoder(args, x_size, y_size):
-    if args.model == 'ff':
+def get_encoder(model, args, x_size, y_size):
+    if model == 'ff':
         return EncNet(args.enc_size, x_size, y_size, use_lstm=False)
-    elif args.model == 'lstm':
+    elif model == 'lstm':
         return EncNet(args.enc_size, x_size, y_size, use_lstm=True)
-    elif args.model == 'lincom':
+    elif model == 'lincom':
         return LinComEncNet(args.enc_size, x_size, y_size)
 
 """ MODELS """
