@@ -41,8 +41,6 @@ parser.add_argument('--start-train-ind', type=int, default=80,
                     help='index of each group element to start backproping.')
 parser.add_argument('--start-test-ind', type=int, default=80,
                     help='index of each group element to start testing.')
-parser.add_argument('--enc-size', type=int, default=25,
-                    help='Size of encoding.')
 parser.add_argument('--weight-ind', type=int, default=-1,
                     help='If set, print weight matrix of test set at ind')
 parser.add_argument('--no-cuda', action='store_true', default=False,
@@ -51,6 +49,11 @@ parser.add_argument('--pred-model', type=str, default='basic',
                     help='predictive model to use (basic)')
 parser.add_argument('--loss-fn', type=str, default='mse',
                     help='path to training data')
+parser.add_argument('--widths', type=int, default=[25, 25],
+                    nargs='+', help='Size of encoding.')
+parser.add_argument('--dropout', type=float, default=0, help='Size of encoding.')
+parser.add_argument('--log', type=str, default="log.txt",
+                    help='log file')
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()

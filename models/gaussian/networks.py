@@ -7,16 +7,16 @@ from torch.autograd import Variable
 
 def get_encoder(model, args, x_size, y_size):
     if model == 'ff':
-        return BasicEncNet(args.enc_size, x_size, y_size, use_lstm=False)
+        return BasicEncNet(args.widths[-1], x_size, y_size, use_lstm=False)
     elif model == 'lstm':
-        return BasicEncNet(args.enc_size, x_size, y_size, use_lstm=True)
+        return BasicEncNet(args.widths[-1], x_size, y_size, use_lstm=True)
     elif model == 'parallel':
-        return ParallelEncNet(args.enc_size, x_size, y_size)
+        return ParallelEncNet(args.widths, x_size, y_size)
     raise RuntimeError("Encoder " + model + " not found!")
 
 def get_predictor(model, args, x_size, y_size):
     if model == 'basic':
-        return BasicPredictNet(args.enc_size, x_size, y_size)
+        return BasicPredictNet(args.widths[-1], x_size, y_size)
     raise RuntimeError("Predictor " + model + " not found!")
 
 """ MODELS """
@@ -68,11 +68,10 @@ class BasicEncNet(nn.Module):
             return h
 
 class ParallelEncNet(nn.Module):
-    def __init__(self, enc_size, x_size, y_size):
+    def __init__(self, widths, x_size, y_size):
         super(ParallelEncNet, self).__init__()
 
-        enc_weights = [enc_size] * 3
-        enc_weights = [x_size+y_size] + enc_weights
+        enc_weights = [x_size+y_size] + widths
         # inp_weights = [x_size+y_size] + [enc_size] * 4
 
         self.enc_linears = nn.ModuleList([
