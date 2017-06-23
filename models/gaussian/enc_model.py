@@ -40,8 +40,6 @@ parser.add_argument('--start-train-ind', type=int, default=80,
                     help='index of each group element to start backproping.')
 parser.add_argument('--start-test-ind', type=int, default=80,
                     help='index of each group element to start testing.')
-parser.add_argument('--enc-size', type=int, default=25,
-                    help='Size of encoding.')
 parser.add_argument('--weight-ind', type=int, default=-1,
                     help='If set, print weight matrix of test set at ind')
 parser.add_argument('--no-cuda', action='store_true', default=False,
@@ -52,6 +50,11 @@ parser.add_argument('--pred-model', type=str, default='basic',
                     help='predictive model to use (basic)')
 parser.add_argument('--loss-fn', type=str, default='mse',
                     help='path to training data')
+parser.add_argument('--widths', type=int, default=[25, 25],
+                    nargs='+', help='Size of encoding.')
+parser.add_argument('--dropout', type=float, default=0, help='Size of encoding.')
+parser.add_argument('--log', type=str, default="log.txt",
+                    help='log file')
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -74,6 +77,7 @@ x_size, y_size = train_set.x_size, train_set.y_size
 
 pred_model = networks.get_predictor(args.pred_model, args, x_size, y_size)
 enc_model = networks.get_encoder(args.enc_model, args, x_size, y_size)
+
 if args.cuda:
     pred_model.cuda()
     enc_model.cuda()
@@ -92,9 +96,15 @@ def zero_variable_(size, volatile=False):
     else:
         return Variable(torch.FloatTensor(*size).zero_(), volatile=volatile)
 
+def log(text):
+    print text
+    with open(args.log, 'a') as f:
+        f.write(text + "\n")
+
 """ TRAIN/TEST LOOPS """
 
 def train_epoch(epoch):
+    enc_model.train()
     tot_loss = 0
     num_samples = 0
     start_time = time.time()
@@ -104,7 +114,7 @@ def train_epoch(epoch):
         enc_optim.zero_grad()
 
         batch_size = batch[0][0].size()[0] # get dynamic batch size
-        enc = zero_variable_((batch_size, args.enc_size))
+        enc = zero_variable_((batch_size, args.widths[-1]))
         encs = []
 
         for i, (x, y) in enumerate(batch):
@@ -130,16 +140,17 @@ def train_epoch(epoch):
         pred_optim.step()
         enc_optim.step()
 
-    print 'Time: {:.2f}s Epoch: {} Train Loss ({}): {:.3f}'.format(
-        time.time() - start_time, epoch, args.loss_fn.upper(), tot_loss / num_samples)
+    log('Time: {:.2f}s Epoch: {} Train Loss ({}): {:.3f}'.format(
+        time.time() - start_time, epoch, args.loss_fn.upper(), tot_loss / num_samples))
 
 def test_epoch(epoch):
+    enc_model.eval()
     tot_loss = 0
     W_loss = 0
     num_samples = 0
     for batch_idx, batch in enumerate(test_loader):
         batch_size = batch[0][0].size()[0] # get actual batch size
-        enc = zero_variable_((batch_size, args.enc_size))
+        enc = zero_variable_((batch_size, args.widths[-1]))
         encs = []
 
         for i, (x, y) in enumerate(batch):
@@ -160,8 +171,8 @@ def test_epoch(epoch):
             enc = enc_model(x, y, enc)
             encs.append(enc)
 
-    print 'Test Loss (L1): {:.3f} W Loss (L1): {:.3f}'.format(
-            tot_loss / num_samples, W_loss / (batch_idx+1))
+    log('Test Loss (L1): {:.3f} W Loss (L1): {:.3f}'.format(
+            tot_loss / num_samples, W_loss / (batch_idx+1)))
 
 if __name__ == '__main__':
     for epoch in range(1, args.epochs+1):
