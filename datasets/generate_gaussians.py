@@ -14,7 +14,7 @@ parser.add_argument('--num-groups', type=int, default=10000)
 parser.add_argument('--num-samples', help="Number of samples per group.", type=int, default=100)
 parser.add_argument('--plot', action="store_true", help="Plot data?")
 parser.add_argument('--add-bias', action="store_true", help="Add bias?")
-parser.add_argument('--add-noise', action="store_true", help="Add noise?")
+parser.add_argument('--add-noise', type=int, default=3, help="Add noise?")
 args = parser.parse_args()
 
 if args.plot:
@@ -35,7 +35,7 @@ if __name__ == '__main__':
             y += b
 
         if args.add_noise:
-            y += np.random.normal(loc=0, scale=3, size=y.shape) # Add noise
+            y += np.random.normal(loc=0, scale=args.add_noise, size=y.shape) # Add noise
 
         if args.plot:
             plt.plot(y[:,0], y[:,1], 'o')
