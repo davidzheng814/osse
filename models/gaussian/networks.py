@@ -72,18 +72,26 @@ class ParallelEncNet(nn.Module):
         super(ParallelEncNet, self).__init__()
 
         enc_weights = [enc_size] * 3
-        enc_weights = [x_size+y_size+enc_size] + enc_weights
+        enc_weights = [x_size+y_size] + enc_weights
         # inp_weights = [x_size+y_size] + [enc_size] * 4
 
-        self.lstm1 = nn.LSTMCell(x_size+y_size, enc_size)
-        self.lstm2 = nn.LSTMCell(enc_size, enc_size)
+        self.enc_linears = nn.ModuleList([
+                nn.Linear(inp, out) for inp, out in zip(enc_weights[:-1], enc_weights[1:])])
+        self.conf_linears = nn.ModuleList([
+                nn.Linear(inp, out) for inp, out in zip(enc_weights[:-1], enc_weights[1:])])
 
-    def forward(self, x, y, enc0):
-        h = torch.cat((x, y, enc0), dim=1)
+    def forward(self, x, y):
+        h = torch.cat((x, y), dim=1)
         for i, lin in enumerate(self.enc_linears):
             if i == len(self.enc_linears) - 1: 
                 h = lin(h)
             else:
                 h = F.relu(lin(h))
+        conf = torch.cat((x, y), dim=1)
+        for i, lin in enumerate(self.conf_linears):
+            if i == len(self.conf_linears) - 1: 
+                conf = torch.sigmoid(lin(conf))
+            else:
+                conf = F.relu(lin(conf))
 
-        return h
+        return h, conf

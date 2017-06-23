@@ -1,10 +1,11 @@
-'''Gaussian prediction using encoding.
+'''Gaussian prediction using encoding with parallel.
 '''
 
 import argparse
 import os
 from os.path import join
 import time
+import numpy as np
 
 import torch
 import torch.nn as nn
@@ -46,8 +47,6 @@ parser.add_argument('--weight-ind', type=int, default=-1,
                     help='If set, print weight matrix of test set at ind')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='disables CUDA training')
-parser.add_argument('--enc-model', type=str, default='ff',
-                    help='encoder model to use (ff/lstm/parallel)')
 parser.add_argument('--pred-model', type=str, default='basic',
                     help='predictive model to use (basic)')
 parser.add_argument('--loss-fn', type=str, default='mse',
@@ -73,7 +72,7 @@ test_loader = torch.utils.data.DataLoader(test_set,
 x_size, y_size = train_set.x_size, train_set.y_size
 
 pred_model = networks.get_predictor(args.pred_model, args, x_size, y_size)
-enc_model = networks.get_encoder(args.enc_model, args, x_size, y_size)
+enc_model = networks.get_encoder('parallel', args, x_size, y_size)
 if args.cuda:
     pred_model.cuda()
     enc_model.cuda()
@@ -104,8 +103,20 @@ def train_epoch(epoch):
         enc_optim.zero_grad()
 
         batch_size = batch[0][0].size()[0] # get dynamic batch size
-        enc = zero_variable_((batch_size, args.enc_size))
+
+        ''' # code to randomly permute
+        x, y = zip(*[(x.numpy(), y.numpy()) for x, y in batch])
+        x, y = np.array(x), np.array(y)
+        x, y = np.transpose(x, [1,0,2]), np.transpose(y, [1,0,2])
+        # x now in shape (batch_size, seq_len, x_size)
+        perm = np.random.permutation(x.shape[1])
+        x, y = x[:,perm,:], y[:,perm,:]
+        raise NotImplementedError
+        '''
+
         encs = []
+        confs = []
+        enc = None
 
         for i, (x, y) in enumerate(batch):
             if args.cuda:
@@ -113,7 +124,11 @@ def train_epoch(epoch):
             x, y = Variable(x), Variable(y)
 
             if i >= args.start_train_ind:
-                pred, W_est = pred_model(x, encs[i-1])
+                if enc is None:
+                    enc_sum = torch.stack(encs).sum(0)[0]
+                    conf_sum = torch.stack(confs).sum(0)[0]
+                    enc = enc_sum / conf_sum
+                pred, W_est = pred_model(x, enc)
                 if args.loss_fn == 'l1':
                     loss = l1(pred, y)
                 else:
@@ -122,9 +137,10 @@ def train_epoch(epoch):
                 batch_loss += loss
                 tot_loss += loss.data[0]
                 num_samples += 1
-
-            enc = enc_model(x, y, enc)
-            encs.append(enc)
+            else:
+                local_enc, conf = enc_model(x, y)
+                encs.append(local_enc * conf)
+                confs.append(conf)
 
         batch_loss.backward()
         pred_optim.step()
@@ -139,26 +155,35 @@ def test_epoch(epoch):
     num_samples = 0
     for batch_idx, batch in enumerate(test_loader):
         batch_size = batch[0][0].size()[0] # get actual batch size
-        enc = zero_variable_((batch_size, args.enc_size))
         encs = []
+        confs = []
+        enc = None
 
         for i, (x, y) in enumerate(batch):
             if args.cuda:
                 x, y = x.cuda(), y.cuda()
             x, y = Variable(x, volatile=True), Variable(y)
 
-            if i >= args.start_test_ind:
-                pred, W = pred_model(x, encs[i-1])
-
+            if i >= args.start_train_ind:
+                if enc is None:
+                    enc_sum = torch.stack(encs).sum(0)[0]
+                    conf_sum = torch.stack(confs).sum(0)[0]
+                    enc = enc_sum / conf_sum
+                pred, W = pred_model(x, enc)
+                if args.loss_fn == 'l1':
+                    loss = l1(pred, y)
+                else:
+                    loss = mse(pred, y)
                 if i == args.start_test_ind:
                     W_loss += l1(Variable(test_set.weights[batch_idx]), W).data[0]
 
                 loss = l1(pred, y)
                 tot_loss += loss.data[0]
                 num_samples += 1
-
-            enc = enc_model(x, y, enc)
-            encs.append(enc)
+            else:
+                local_enc, conf = enc_model(x, y)
+                encs.append(local_enc * conf)
+                confs.append(conf)
 
     print 'Test Loss (L1): {:.3f} W Loss (L1): {:.3f}'.format(
             tot_loss / num_samples, W_loss / (batch_idx+1))
