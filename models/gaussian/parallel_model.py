@@ -46,11 +46,13 @@ parser.add_argument('--weight-ind', type=int, default=-1,
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='disables CUDA training')
 parser.add_argument('--pred-model', type=str, default='basic',
-                    help='predictive model to use (basic)')
+                    help='predictive model to use (basic/nonlinear)')
 parser.add_argument('--loss-fn', type=str, default='mse',
                     help='path to training data')
-parser.add_argument('--widths', type=int, default=[25, 25],
-                    nargs='+', help='Size of encoding.')
+parser.add_argument('--enc_widths', type=int, default=[25, 25],
+                    nargs='+', help='Size of encoding layers.')
+parser.add_argument('--pred_widths', type=int, default=[25, 25],
+                    nargs='+', help='Size of predictor layers (for nonlinear).')
 parser.add_argument('--dropout', type=float, default=0, help='Size of encoding.')
 parser.add_argument('--log', type=str, default="log.txt",
                     help='log file')

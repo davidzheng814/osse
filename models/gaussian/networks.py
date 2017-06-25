@@ -7,16 +7,18 @@ from torch.autograd import Variable
 
 def get_encoder(model, args, x_size, y_size):
     if model == 'ff':
-        return BasicEncNet(args.widths[-1], x_size, y_size, use_lstm=False)
+        return BasicEncNet(args.enc_widths[-1], x_size, y_size, use_lstm=False)
     elif model == 'lstm':
-        return BasicEncNet(args.widths[-1], x_size, y_size, use_lstm=True)
+        return BasicEncNet(args.enc_widths[-1], x_size, y_size, use_lstm=True)
     elif model == 'parallel':
-        return ParallelEncNet(args.widths, x_size, y_size)
+        return ParallelEncNet(args.enc_widths, x_size, y_size)
     raise RuntimeError("Encoder " + model + " not found!")
 
 def get_predictor(model, args, x_size, y_size):
     if model == 'basic':
-        return BasicPredictNet(args.widths[-1], x_size, y_size)
+        return BasicPredictNet(args.enc_widths[-1], x_size, y_size)
+    if model == 'nonlinear':
+        return NLPredictNet(args.enc_widths[-1], args.pred_widths, x_size, y_size)
     raise RuntimeError("Predictor " + model + " not found!")
 
 """ MODELS """
@@ -30,6 +32,25 @@ class BasicPredictNet(nn.Module):
     def forward(self, x, enc):
         x = x.unsqueeze(1)
         W = self.lin(enc).view([-1, self.x_size, self.y_size])
+        h = torch.bmm(x, W).squeeze()
+
+        return h, W
+
+class NLPredictNet(nn.Module):
+    def __init__(self, enc_width, pred_widths, x_size, y_size):
+        super(NLPredictNet, self).__init__()
+        model = []
+        layer_sizes = [enc_width] + pred_widths
+        for in_width, out_width in zip(layer_sizes[:-1], layer_sizes[1:]):
+            model.append(nn.Linear(in_width, out_width))
+            model.append(nn.ReLU())
+        model.append(nn.Linear(pred_widths[-1], x_size * y_size))
+        self.model = nn.Sequential(*model)
+        self.x_size, self.y_size = x_size, y_size
+
+    def forward(self, x, enc):
+        x = x.unsqueeze(1)
+        W = self.model(enc).view([-1, self.x_size, self.y_size])
         h = torch.bmm(x, W).squeeze()
 
         return h, W
