@@ -9,7 +9,7 @@ import torch
 import torch.utils.data
 
 class GaussianDataset(torch.utils.data.Dataset):
-    def __init__(self, args, train=True):
+    def __init__(self, args, train=True, normalize=False):
         super(GaussianDataset, self).__init__()
         self.files = glob.glob(args.data_dir + '/*.npz')
 
@@ -34,6 +34,11 @@ class GaussianDataset(torch.utils.data.Dataset):
         for file_ in self.files[1:]:
             with np.load(file_) as data:
                 assert data['x_size'] == self.x_size and data['y_size'] == self.y_size
+                datadict = {key: value for key, value in data.iteritems()}
+                data = datadict
+                if normalize:
+                    data['y'] = data['y'] / np.max(np.abs(data['y']))
+                    data['x'] = data['x'] / np.max(np.abs(data['x']))
                 self.data.append(GaussianDataset.to_list(data))
                 if not train:
                     self.weights.append(data['W'])
