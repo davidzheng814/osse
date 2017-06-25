@@ -1,0 +1,3 @@
+2017-06-25
+
+Ran parallel enc + basic pred (1 linear layer) for 1000 epochs, ending L1 error was around 8. Performed on "gaussian" dataset with generated 2D x and 2D y data, with noise of 3.
