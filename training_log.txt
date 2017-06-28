@@ -1,3 +1,9 @@
 2017-06-25
 
 Ran parallel enc + basic pred (1 linear layer) for 1000 epochs, ending L1 error was around 8. Performed on "gaussian" dataset with generated 2D x and 2D y data, with noise of 3.
+
+2017-06-25
+
+python parallel_model.py --normalize --max-files 5000 --test-files 100 --epochs 100 --batch-size 512
+
+Almost immediately begins overfitting. MSE goes to 0.167 in 100 epochs, L1 goes to 1.295
