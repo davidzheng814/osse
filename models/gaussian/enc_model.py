@@ -42,6 +42,8 @@ parser.add_argument('--start-test-ind', type=int, default=80,
                     help='index of each group element to start testing.')
 parser.add_argument('--weight-ind', type=int, default=-1,
                     help='If set, print weight matrix of test set at ind')
+parser.add_argument('--normalize', action='store_true', default=False,
+                    help='normalize inputs and outputs to [-1, 1]')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='disables CUDA training')
 parser.add_argument('--enc-model', type=str, default='ff',
@@ -67,10 +69,10 @@ if args.cuda:
 """ INITIALIZATIONS """
 
 kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
-train_set = datasets.GaussianDataset(args, train=True)
+train_set = datasets.GaussianDataset(args, train=True, normalize=args.normalize)
 train_loader = torch.utils.data.DataLoader(train_set,
     batch_size=args.batch_size, shuffle=True, **kwargs)
-test_set = datasets.GaussianDataset(args, train=False)
+test_set = datasets.GaussianDataset(args, train=False, normalize=args.normalize)
 test_loader = torch.utils.data.DataLoader(test_set,
     batch_size=args.batch_size, shuffle=False, **kwargs)
 x_size, y_size = train_set.x_size, train_set.y_size
