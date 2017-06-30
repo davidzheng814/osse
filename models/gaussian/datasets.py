@@ -9,17 +9,22 @@ import torch
 import torch.utils.data
 
 class GaussianDataset(torch.utils.data.Dataset):
-    def __init__(self, args, train=True, normalize=False):
+    def __init__(self, args, train=True, normalize=False,
+                 test_on_train=False):
         super(GaussianDataset, self).__init__()
         self.files = glob.glob(args.data_dir + '/*.npz')
 
         if args.max_files > 0:
             self.files = self.files[:args.max_files]
 
-        assert len(self.files) > args.test_files
+        assert len(self.files) >= args.test_files
 
-        if train:
+        if test_on_train and train:
+            pass
+        elif train:
             self.files = self.files[:-args.test_files]
+        elif test_on_train:
+            self.files = self.files[:args.test_files]
         else:
             self.files = self.files[-args.test_files:]
 
@@ -37,8 +42,10 @@ class GaussianDataset(torch.utils.data.Dataset):
                 datadict = {key: value for key, value in data.iteritems()}
                 data = datadict
                 if normalize:
-                    data['y'] = data['y'] / np.max(np.abs(data['y']))
-                    data['x'] = data['x'] / np.max(np.abs(data['x']))
+                    scale_factor = max(np.max(np.abs(data['y'])),
+                                       np.max(np.abs(data['x'])))
+                    data['y'] = data['y'] / scale_factor
+                    data['x'] = data['x'] / scale_factor
                 self.data.append(GaussianDataset.to_list(data))
                 if not train:
                     self.weights.append(data['W'])
