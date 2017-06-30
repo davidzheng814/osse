@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -37,6 +38,10 @@ class BasicPredictNet(nn.Module):
         return h, W
 
 class NLPredictNet(nn.Module):
+    '''
+    A predict network that applies nonlinear layers onto the encoding to form the W
+    matrix in a hardcoded y = W * x output.
+    '''
     def __init__(self, enc_width, pred_widths, x_size, y_size):
         super(NLPredictNet, self).__init__()
         model = []
@@ -52,9 +57,6 @@ class NLPredictNet(nn.Module):
         x = x.unsqueeze(1)
         W = self.model(enc).view([-1, self.x_size, self.y_size])
         h = torch.bmm(x, W).squeeze()
-
-        return h, W
-
 
 class BasicEncNet(nn.Module):
     def __init__(self, enc_size, x_size, y_size, use_lstm=False):
@@ -92,8 +94,10 @@ class ParallelEncNet(nn.Module):
     def __init__(self, widths, x_size, y_size):
         super(ParallelEncNet, self).__init__()
 
+        self.enc0 = Variable(torch.Tensor(np.zeros((1, widths[-1]))).cuda())
+        self.conf0 = Variable(torch.Tensor(np.zeros((1, widths[-1]))).cuda())
+
         enc_weights = [x_size+y_size] + widths
-        # inp_weights = [x_size+y_size] + [enc_size] * 4
 
         self.enc_linears = nn.ModuleList([
                 nn.Linear(inp, out) for inp, out in zip(enc_weights[:-1], enc_weights[1:])])
