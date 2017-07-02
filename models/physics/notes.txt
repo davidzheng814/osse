@@ -1,0 +1,15 @@
+Mass: [2-8]
+Params: lr-enc 1e-3, max-files: 10000, test-files: 1000, batch-size 128, widths: [50, 50]
+Res: Epoch 30, Train Loss (MSE): .407, Test Loss (L1): .472
+
+Params: lr-enc 1e-3, max-files: 50000, test-files: 1000, batch-size 128, widths: [50, 50]
+Res: Epoch 17, Train Loss (MSE): .323, Test Loss (L1): .421
+
+Mass: [2-12]
+Params: lr-enc 1e-3, max-files: 50000, test-files 1000, batch-size 512, widths: [50, 50]
+Res: Epoch 196, Train Loss: (MSE): .515, Test Loss (L1): .440
+
+Params: lr-enc 2e-3, max-files: 50000, test-files 1000, batch-size 1000, widths: [50, 50, 25]
+Res: Epoch 121, Train Loss (MSE): 0.469, Test Loss (L1): 0.395
+
+

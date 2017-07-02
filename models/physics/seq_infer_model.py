@@ -40,6 +40,8 @@ parser.add_argument('--start-train-ind', type=int, default=80,
                     help='index of each group element to start backproping.')
 parser.add_argument('--start-test-ind', type=int, default=80,
                     help='index of each group element to start testing.')
+parser.add_argument('--init-enc', type=float, default=7,
+                    help='Scalar value to initialize encoding too')
 parser.add_argument('--weight-ind', type=int, default=-1,
                     help='If set, print weight matrix of test set at ind')
 parser.add_argument('--num-workers', type=int, default=4,
@@ -113,35 +115,49 @@ class PhysicsDataset(torch.utils.data.Dataset):
 
 """ MODELS """
 
-class ParallelEncNet(nn.Module):
+class SeqEncNet(nn.Module):
     def __init__(self, widths, x_size):
-        super(ParallelEncNet, self).__init__()
+        super(SeqEncNet, self).__init__()
 
-        enc_weights = [x_size] + widths + [1]
+        if args.use_lstm:
+            lstm_weights = [x_size] + widths[:-1]
+            self.enc_lstms = nn.ModuleList([
+                nn.LSTMCell(inp, out) for inp, out in zip(lstm_weights[:-1], lstm_weights[1:])])
 
-        self.enc_linears = nn.ModuleList([
-            nn.Linear(inp, out) for inp, out in zip(enc_weights[:-1], enc_weights[1:])])
+            lin_weights = widths[-2:]
+            self.enc_linears = nn.ModuleList([
+                nn.Linear(inp, out) for inp, out in zip(lin_weights[:-1], lin_weights[1:])])
 
-        self.conf_linears = nn.ModuleList([
-            nn.Linear(inp, out) for inp, out in zip(enc_weights[:-1], enc_weights[1:])])
+            self.reset_cell_state()
+        else:
+            lin_weights = [x_size + widths[-1]] + widths
 
+            self.enc_linears = nn.ModuleList([
+                nn.Linear(inp, out) for inp, out in zip(lin_weights[:-1], lin_weights[1:])])
 
-    def forward(self, x):
-        h = x
+    def forward(self, x, h):
+        if args.use_lstm:
+            h = x
+        else:
+            h = torch.cat((x, h), dim=1)
+
+        if args.use_lstm:
+            for i, lstm in enumerate(self.enc_lstms):
+                h, c = lstm(h, self.cell_states[i])
+                self.cell_states[i] = (h, c)
         for i, lin in enumerate(self.enc_linears):
             if i == len(self.enc_linears) - 1:
                 h = lin(h)
             else:
                 h = F.relu(lin(h))
 
-        conf = x
-        for i, lin in enumerate(self.conf_linears):
-            if i == len(self.conf_linears) - 1:
-                conf = torch.sigmoid(lin(conf))
-            else:
-                conf = F.relu(lin(conf))
+        return h
 
-        return h, conf
+    def reset_cell_state(self, batch_size):
+        assert args.use_lstm
+
+        self.cell_states = [(zero_variable_((batch_size, width)),
+            zero_variable_((batch_size, width))) for width in args.widths[:-1]]
 
 
 """ INITIALIZATIONS """
@@ -158,7 +174,7 @@ test_loader = torch.utils.data.DataLoader(test_set,
 
 x_size = train_set.x_size
 
-enc_model = ParallelEncNet(args.widths, x_size)
+enc_model = SeqEncNet(args.widths, x_size)
 if args.cuda:
     enc_model.cuda()
 
@@ -175,6 +191,10 @@ def zero_variable_(size, volatile=False):
     else:
         return Variable(torch.FloatTensor(*size).zero_(), volatile=volatile)
 
+def init_variable_(batch_size):
+    return zero_variable_((batch_size, args.widths[-1]))
+    # return torch.cat([torch.add(zero_variable_((batch_size, 1)), args.init_enc), zero_variable_((batch_size, args.widths[-1] - 1))], dim=1)
+
 """ TRAIN/TEST LOOPS """
 
 def train_epoch(epoch):
@@ -184,7 +204,10 @@ def train_epoch(epoch):
     for batch_idx, (x, y) in enumerate(train_loader):
         enc_optim.zero_grad()
 
-        encs, confs = [], []
+        batch_size = x[0].size()[0]
+        enc = init_variable_(batch_size)
+        if args.use_lstm:
+            enc_model.reset_cell_state(batch_size)
 
         if args.cuda:
             y = y.cuda()
@@ -195,14 +218,9 @@ def train_epoch(epoch):
                 sample = sample.cuda()
             sample = Variable(sample)
 
-            local_enc, conf = enc_model(sample)
-            encs.append(local_enc)
-            confs.append(conf)
+            enc = enc_model(sample, enc)
 
-        enc_sum = torch.stack(encs).sum(0)[0]
-        conf_sum = torch.stack(confs).sum(0)[0]
-        enc = enc_sum / conf_sum
-        loss = mse(enc, y)
+        loss = mse(enc[:,:1], y)
         tot_loss += loss.data[0]
         num_samples += 1
 
@@ -218,7 +236,10 @@ def test_epoch(epoch):
     num_samples = 0
     start_time = time.time()
     for batch_idx, (x, y) in enumerate(test_loader):
-        encs, confs = [], []
+        batch_size = x[0].size()[0]
+        enc = init_variable_(batch_size)
+        if args.use_lstm:
+            enc_model.reset_cell_state(batch_size)
 
         if args.cuda:
             y = y.cuda()
@@ -227,17 +248,12 @@ def test_epoch(epoch):
         for i, sample in enumerate(x):
             if args.cuda:
                 sample = sample.cuda()
-            sample = Variable(sample, volatile=True)
+            sample = Variable(sample)
 
-            local_enc, conf = enc_model(sample)
-            encs.append(local_enc)
-            confs.append(conf)
+            enc = enc_model(sample, enc)
 
-        enc_sum = torch.stack(encs).sum(0)[0]
-        conf_sum = torch.stack(confs).sum(0)[0]
-        enc = enc_sum / conf_sum
-        l1_loss += l1(enc, y).data[0]
-        mse_loss += mse(enc, y).data[0]
+        l1_loss += l1(enc[:,:1], y).data[0]
+        mse_loss += mse(enc[:,:1], y).data[0]
         num_samples += 1
 
     print 'Test Loss (L1): {:.3f} (MSE): {:.3f}'.format(l1_loss / num_samples, mse_loss / num_samples)
