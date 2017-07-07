@@ -53,7 +53,9 @@ parser.add_argument('--use-prior', action='store_true', default=False,
 parser.add_argument('--test-on-train', action='store_true', default=False,
                     help='test model on training data')
 parser.add_argument('--enc-model', type=str, default='parallel',
-                    help='encoder model to use (ff/lstm/parallel)')
+                    help='encoder model to use (rnn/lstm/parallel)')
+parser.add_argument('--enc-wrapper', type=str, default='confweight',
+                    help='wrapper to use (confweight/rollingconf/recurrent)')
 parser.add_argument('--pred-model', type=str, default='basic',
                     help='predictive model to use (basic/nonlinear)')
 parser.add_argument('--loss-fn', type=str, default='mse',
@@ -88,7 +90,8 @@ x_size, y_size = train_set.x_size, train_set.y_size
 print "Data loaded."
 
 pred_model = networks.get_predictor(args.pred_model, args, x_size, y_size)
-enc_model_wrapper = networks.get_encoder_wrapper(args.enc_model, args, x_size, y_size)
+enc_model = networks.get_encoder(args.enc_model, args, x_size, y_size)
+enc_model_wrapper = networks.get_wrapper(args.enc_wrapper, enc_model, args)
 if args.cuda:
     pred_model.cuda()
     enc_model_wrapper.cuda()
@@ -103,7 +106,20 @@ print "Models built."
 
 """ TRAIN/TEST LOOPS """
 
-def train_epoch_wrapper(epoch):
+def train_epoch_rolling(epoch):
+    tot_loss = 0
+    tot_loss_l1 = 0
+    num_samples = 0
+    start_time = time.time()
+    for batch_idx, batch in enumerate(train_loader):
+        batch_loss = util.zero_variable((1,), args.cuda)
+        pred_optim.zero_grad()
+        enc_optim.zero_grad()
+
+        x_batch, y_batch = zip(*batch)
+        enc = enc_model_wrapper(x_batch, y_batch) 
+
+def train_epoch(epoch):
     tot_loss = 0
     tot_loss_l1 = 0
     num_samples = 0
@@ -138,7 +154,7 @@ def train_epoch_wrapper(epoch):
         time.time() - start_time, epoch, args.loss_fn.upper(), tot_loss / num_samples,
         tot_loss_l1 / num_samples)
 
-def test_epoch_wrapper(epoch):
+def test_epoch(epoch):
     tot_loss_l1 = 0
     tot_loss_mse = 0
     tot_loss_l1_gt = 0
@@ -175,6 +191,6 @@ def test_epoch_wrapper(epoch):
 
 if __name__ == '__main__':
     for epoch in range(1, args.epochs+1):
-        train_epoch_wrapper(epoch)
-        test_epoch_wrapper(epoch)
+        train_epoch(epoch)
+        test_epoch(epoch)
 

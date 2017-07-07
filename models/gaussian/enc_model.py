@@ -47,8 +47,8 @@ parser.add_argument('--normalize', action='store_true', default=False,
                     help='normalize inputs and outputs to [-1, 1]')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='disables CUDA training')
-parser.add_argument('--enc-model', type=str, default='ff',
-                    help='encoder model to use (ff/lstm/parallel)')
+parser.add_argument('--enc-model', type=str, default='rnn',
+                    help='encoder model to use (rnn/lstm/parallel)')
 parser.add_argument('--pred-model', type=str, default='basic',
                     help='predictive model to use (basic)')
 parser.add_argument('--loss-fn', type=str, default='mse',

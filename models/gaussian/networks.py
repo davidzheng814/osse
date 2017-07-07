@@ -8,18 +8,25 @@ from torch.autograd import Variable
 
 import util
 
+def get_wrapper(wrapper, encoder, args):
+    wrappermap = {'confweight': ConfidenceWeightWrapper,
+            'rollingconf': RollingConfWrapper,
+            'recurrent': RecurrentWrapper}
+    if wrapper in wrappermap:
+        return wrappermap[wrapper](encoder, args)
+    else:
+        raise RuntimeError("Wrapper " + wrapper + " not found!")
+
 def get_encoder_wrapper(model, args, x_size, y_size):
     encoder = get_encoder(model, args, x_size, y_size)
-    if model == 'ff' or model == 'lstm':
-        return RecurrentWrapper(encoder, args.enc_widths[-1], use_cuda=args.cuda)
+    if model == 'rnn' or model == 'lstm':
+        return RecurrentWrapper(encoder, args)
     elif model == 'parallel':
-        return ConfidenceWeightWrapper(encoder, args.enc_widths[-1],
-                                       use_cuda=args.cuda,
-                                       use_prior=args.use_prior)
+        return ConfidenceWeightWrapper(encoder, args)
     raise RuntimeError("Encoder " + model + " not found!")
 
 def get_encoder(model, args, x_size, y_size):
-    if model == 'ff':
+    if model == 'rnn':
         return BasicEncNet(args.enc_widths[-1], x_size, y_size, use_lstm=False)
     elif model == 'lstm':
         return BasicEncNet(args.enc_widths[-1], x_size, y_size, use_lstm=True)
@@ -42,11 +49,11 @@ class RecurrentWrapper(nn.Module):
     previous encoding.
     Outputs a single encoding.
     """
-    def __init__(self, step_model, enc_width, use_cuda=True, use_prior=False):
+    def __init__(self, step_model, args):
         super(RecurrentWrapper, self).__init__()
         self.step_model = step_model
-        self.use_cuda = use_cuda
-        self.enc_width = enc_width
+        self.use_cuda = args.cuda
+        self.enc_width = args.enc_widths[-1]
 
     # x_batch has shape (time_steps, batch_size, x_size)
     # only the last 2 layers are torch Tensors
@@ -64,24 +71,23 @@ class RecurrentWrapper(nn.Module):
 
 class ConfidenceWeightWrapper(nn.Module):
     """
-    Wraps a model that outputs a weight and confidence for a given timestep
-    to produce an overall encoding from a sequence of time steps.
+    Wraps a model that outputs a local encoding and confidence for each timestep.
+    Outputs a single encoding.
     """
-    def __init__(self, step_model, enc_width, use_cuda=True, use_prior=False):
+    def __init__(self, step_model, args):
+        #enc_width, use_cuda=True, use_prior=False):
         super(ConfidenceWeightWrapper, self).__init__()
         self.step_model = step_model
-        self.enc_width = enc_width
-        self.use_cuda = use_cuda
-        self.use_prior = use_prior
+        self.enc_width = args.enc_widths[-1]
+        self.use_cuda = args.cuda
+        self.use_prior = args.use_prior
 
     # x_batch has shape (time_steps, batch_size, x_size)
     # only the last 2 layers are torch Tensors
     def forward(self, x_batch, y_batch):
         batch_size = x_batch[0].size()[0] # get dynamic batch size
-        w_enc_sum = Variable(torch.FloatTensor(batch_size, self.enc_width)\
-                .cuda().zero_())
-        conf_sum = Variable(torch.FloatTensor(batch_size, self.enc_width)\
-                .cuda().zero_())
+        w_enc_sum = util.zero_variable((batch_size, self.enc_width), self.use_cuda)
+        conf_sum = util.zero_variable((batch_size, self.enc_width), self.use_cuda)
         if self.use_prior:
             enc0_expand = self.step_model.enc0.repeat(batch_size,1)
             conf0_expand = self.step_model.conf0.repeat(batch_size,1)
@@ -97,6 +103,42 @@ class ConfidenceWeightWrapper(nn.Module):
             conf_sum += conf
         return w_enc_sum / conf_sum
 
+class RollingConfWrapper(nn.Module):
+    """
+    Wraps a model that outputs a local encoding and confidence for each timestep.
+    Outputs the encoding to use for every time step.
+    """
+    def __init__(self, step_model, enc_width, use_cuda=True, use_prior=False):
+        super(RollingConfWrapper, self).__init__()
+        self.step_model = step_model
+        self.enc_width = enc_width
+        self.use_cuda = use_cuda
+        self.use_prior = use_prior
+
+    # x_batch has shape (time_steps, batch_size, x_size)
+    # only the last 2 layers are torch Tensor
+    def forward(self, x_batch, y_batch):
+        batch_size = x_batch[0].size()[0] # get dynamic batch size
+        n_time_steps = len(x_batch)
+        w_encs = util.zero_variable((n_time_steps, batch_size, self.enc_width),
+                self.use_cuda)
+        confs = util.zero_variable((n_time_steps, batch_size, self.enc_width),
+                self.use_cuda)
+        if self.use_prior:
+            enc0_expand = self.step_model.enc0.repeat(batch_size,1)
+            conf0_expand = self.step_model.conf0.repeat(batch_size,1)
+            w_encs[0,:,:] = enc0_expand * conf0_expand
+            confs[0,:,:] = conf0_expand
+        # i = time step
+        for i, (x, y) in enumerate(zip(x_batch[:-1], y_batch[:-1])):
+            if self.use_cuda:
+                x, y = x.cuda(), y.cuda()
+            x, y = Variable(x), Variable(y)
+            local_enc, conf = self.step_model(x, y)
+            w_enc_sum[i+1] = local_enc * conf
+            conf_sum[i+1] = conf
+        return torch.cumsum(w_encs, dim=0) / torch.cumsum(confs, dim=0)
+
 """ PredNets """
 
 class BasicPredictNet(nn.Module):
@@ -109,7 +151,6 @@ class BasicPredictNet(nn.Module):
         x = x.unsqueeze(1)
         W = self.lin(enc).view([-1, self.x_size, self.y_size])
         h = torch.bmm(x, W).squeeze()
-
         return h, W
 
 class NLPredictNet(nn.Module):
@@ -132,6 +173,7 @@ class NLPredictNet(nn.Module):
         x = x.unsqueeze(1)
         W = self.model(enc).view([-1, self.x_size, self.y_size])
         h = torch.bmm(x, W).squeeze()
+        return h, W
 
 """ EncNets """
 
