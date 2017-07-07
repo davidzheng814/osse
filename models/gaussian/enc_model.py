@@ -15,6 +15,7 @@ from torch.autograd import Variable
 
 import networks
 import datasets
+import util
 
 """ CONFIG """
 
@@ -92,12 +93,6 @@ l1 = nn.L1Loss()
 
 """ HELPERS """
 
-def zero_variable_(size, volatile=False):
-    if args.cuda:
-        return Variable(torch.cuda.FloatTensor(*size).zero_(), volatile=volatile)
-    else:
-        return Variable(torch.FloatTensor(*size).zero_(), volatile=volatile)
-
 def log(text):
     print text
     with open(args.log, 'a') as f:
@@ -111,12 +106,12 @@ def train_epoch(epoch):
     num_samples = 0
     start_time = time.time()
     for batch_idx, batch in enumerate(train_loader):
-        batch_loss = zero_variable_((1,))
+        batch_loss = util.zero_variable((1,))
         pred_optim.zero_grad()
         enc_optim.zero_grad()
 
         batch_size = batch[0][0].size()[0] # get dynamic batch size
-        enc = zero_variable_((batch_size, args.widths[-1]))
+        enc = util.zero_variable((batch_size, args.enc_widths[-1]), args.cuda)
         encs = []
 
         for i, (x, y) in enumerate(batch):
@@ -152,7 +147,7 @@ def test_epoch(epoch):
     num_samples = 0
     for batch_idx, batch in enumerate(test_loader):
         batch_size = batch[0][0].size()[0] # get actual batch size
-        enc = zero_variable_((batch_size, args.widths[-1]))
+        enc = util.zero_variable((batch_size, args.enc_widths[-1]), args.cuda)
         encs = []
 
         for i, (x, y) in enumerate(batch):

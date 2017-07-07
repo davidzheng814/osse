@@ -6,12 +6,16 @@ import torch.optim as optim
 import torch.utils.data
 from torch.autograd import Variable
 
+import util
+
 def get_encoder_wrapper(model, args, x_size, y_size):
+    encoder = get_encoder(model, args, x_size, y_size)
     if model == 'ff' or model == 'lstm':
-        return BasicEncNet(args.enc_widths[-1], x_size, y_size, use_lstm=False)
+        return RecurrentWrapper(encoder, args.enc_widths[-1], use_cuda=args.cuda)
     elif model == 'parallel':
-        return ConfidenceWeightWrapper(get_encoder(model, args, x_size, y_size),
-                                       use_cuda=args.cuda, use_prior=args.use_prior)
+        return ConfidenceWeightWrapper(encoder, args.enc_widths[-1],
+                                       use_cuda=args.cuda,
+                                       use_prior=args.use_prior)
     raise RuntimeError("Encoder " + model + " not found!")
 
 def get_encoder(model, args, x_size, y_size):
@@ -32,14 +36,41 @@ def get_predictor(model, args, x_size, y_size):
 
 """ MODEL WRAPPERS """
 
+class RecurrentWrapper(nn.Module):
+    """
+    Wraps a model that outputs an encoding at every time step after receiving the
+    previous encoding.
+    Outputs a single encoding.
+    """
+    def __init__(self, step_model, enc_width, use_cuda=True, use_prior=False):
+        super(RecurrentWrapper, self).__init__()
+        self.step_model = step_model
+        self.use_cuda = use_cuda
+        self.enc_width = enc_width
+
+    # x_batch has shape (time_steps, batch_size, x_size)
+    # only the last 2 layers are torch Tensors
+    def forward(self, x_batch, y_batch):
+        batch_size = x_batch[0].size()[0] # get dynamic batch size
+        enc0 = util.zero_variable((batch_size, self.enc_width), self.use_cuda)
+        enc = enc0.clone()
+        # i = time step
+        for i, (x, y) in enumerate(zip(x_batch, y_batch)):
+            if self.use_cuda:
+                x, y = x.cuda(), y.cuda()
+            x, y = Variable(x), Variable(y)
+            enc = self.step_model(x, y, enc)
+        return enc
+
 class ConfidenceWeightWrapper(nn.Module):
     """
     Wraps a model that outputs a weight and confidence for a given timestep
     to produce an overall encoding from a sequence of time steps.
     """
-    def __init__(self, step_model, use_cuda=True, use_prior=False):
+    def __init__(self, step_model, enc_width, use_cuda=True, use_prior=False):
         super(ConfidenceWeightWrapper, self).__init__()
         self.step_model = step_model
+        self.enc_width = enc_width
         self.use_cuda = use_cuda
         self.use_prior = use_prior
 
@@ -47,10 +78,10 @@ class ConfidenceWeightWrapper(nn.Module):
     # only the last 2 layers are torch Tensors
     def forward(self, x_batch, y_batch):
         batch_size = x_batch[0].size()[0] # get dynamic batch size
-        w_enc_sum = Variable(torch.FloatTensor(batch_size,
-            self.step_model.enc0.size()[1]).cuda().zero_())
-        conf_sum = Variable(torch.FloatTensor(batch_size,
-            self.step_model.enc0.size()[1]).cuda().zero_())
+        w_enc_sum = Variable(torch.FloatTensor(batch_size, self.enc_width)\
+                .cuda().zero_())
+        conf_sum = Variable(torch.FloatTensor(batch_size, self.enc_width)\
+                .cuda().zero_())
         if self.use_prior:
             enc0_expand = self.step_model.enc0.repeat(batch_size,1)
             conf0_expand = self.step_model.conf0.repeat(batch_size,1)
@@ -66,7 +97,7 @@ class ConfidenceWeightWrapper(nn.Module):
             conf_sum += conf
         return w_enc_sum / conf_sum
 
-""" MODELS """
+""" PredNets """
 
 class BasicPredictNet(nn.Module):
     def __init__(self, enc_size, x_size, y_size):
@@ -101,6 +132,8 @@ class NLPredictNet(nn.Module):
         x = x.unsqueeze(1)
         W = self.model(enc).view([-1, self.x_size, self.y_size])
         h = torch.bmm(x, W).squeeze()
+
+""" EncNets """
 
 class BasicEncNet(nn.Module):
     def __init__(self, enc_size, x_size, y_size, use_lstm=False):

@@ -16,6 +16,7 @@ from torch.autograd import Variable
 
 import networks
 import datasets
+import util
 
 """ CONFIG """
 
@@ -48,9 +49,11 @@ parser.add_argument('--no-cuda', action='store_true', default=False,
 parser.add_argument('--normalize', action='store_true', default=False,
                     help='normalize inputs and outputs to [-1, 1]')
 parser.add_argument('--use-prior', action='store_true', default=False,
-                    help='use a prior for the parllel encnet (enc0, conf0)')
+                    help='use a prior for the parallel encnet (enc0, conf0)')
 parser.add_argument('--test-on-train', action='store_true', default=False,
                     help='test model on training data')
+parser.add_argument('--enc-model', type=str, default='parallel',
+                    help='encoder model to use (ff/lstm/parallel)')
 parser.add_argument('--pred-model', type=str, default='basic',
                     help='predictive model to use (basic/nonlinear)')
 parser.add_argument('--loss-fn', type=str, default='mse',
@@ -85,7 +88,7 @@ x_size, y_size = train_set.x_size, train_set.y_size
 print "Data loaded."
 
 pred_model = networks.get_predictor(args.pred_model, args, x_size, y_size)
-enc_model_wrapper = networks.get_encoder_wrapper('parallel', args, x_size, y_size)
+enc_model_wrapper = networks.get_encoder_wrapper(args.enc_model, args, x_size, y_size)
 if args.cuda:
     pred_model.cuda()
     enc_model_wrapper.cuda()
@@ -98,14 +101,6 @@ l1 = nn.L1Loss()
 
 print "Models built."
 
-""" HELPERS """
-
-def zero_variable_(size, volatile=False):
-    if args.cuda:
-        return Variable(torch.cuda.FloatTensor(*size).zero_(), volatile=volatile)
-    else:
-        return Variable(torch.FloatTensor(*size).zero_(), volatile=volatile)
-
 """ TRAIN/TEST LOOPS """
 
 def train_epoch_wrapper(epoch):
@@ -114,7 +109,7 @@ def train_epoch_wrapper(epoch):
     num_samples = 0
     start_time = time.time()
     for batch_idx, batch in enumerate(train_loader):
-        batch_loss = zero_variable_((1,))
+        batch_loss = util.zero_variable((1,), args.cuda)
         pred_optim.zero_grad()
         enc_optim.zero_grad()
 
