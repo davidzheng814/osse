@@ -85,15 +85,13 @@ x_size, y_size = train_set.x_size, train_set.y_size
 print "Data loaded."
 
 pred_model = networks.get_predictor(args.pred_model, args, x_size, y_size)
-enc_model = networks.get_encoder('parallel', args, x_size, y_size)
-enc_model_wrapper = networks.ConfidenceWeightWrapper(
-        enc_model, use_cuda=args.cuda, use_prior=args.use_prior)
+enc_model_wrapper = networks.get_encoder_wrapper('parallel', args, x_size, y_size)
 if args.cuda:
     pred_model.cuda()
-    enc_model.cuda()
+    enc_model_wrapper.cuda()
 
 pred_optim = optim.Adam(pred_model.parameters(), lr=args.lr_pred)
-enc_optim = optim.Adam(enc_model.parameters(), lr=args.lr_enc)
+enc_optim = optim.Adam(enc_model_wrapper.parameters(), lr=args.lr_enc)
 
 mse = nn.MSELoss()
 l1 = nn.L1Loss()

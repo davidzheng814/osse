@@ -6,6 +6,14 @@ import torch.optim as optim
 import torch.utils.data
 from torch.autograd import Variable
 
+def get_encoder_wrapper(model, args, x_size, y_size):
+    if model == 'ff' or model == 'lstm':
+        return BasicEncNet(args.enc_widths[-1], x_size, y_size, use_lstm=False)
+    elif model == 'parallel':
+        return ConfidenceWeightWrapper(get_encoder(model, args, x_size, y_size),
+                                       use_cuda=args.cuda, use_prior=args.use_prior)
+    raise RuntimeError("Encoder " + model + " not found!")
+
 def get_encoder(model, args, x_size, y_size):
     if model == 'ff':
         return BasicEncNet(args.enc_widths[-1], x_size, y_size, use_lstm=False)
