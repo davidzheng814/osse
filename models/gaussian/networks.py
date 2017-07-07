@@ -22,6 +22,42 @@ def get_predictor(model, args, x_size, y_size):
         return NLPredictNet(args.enc_widths[-1], args.pred_widths, x_size, y_size)
     raise RuntimeError("Predictor " + model + " not found!")
 
+""" MODEL WRAPPERS """
+
+class ConfidenceWeightWrapper(nn.Module):
+    """
+    Wraps a model that outputs a weight and confidence for a given timestep
+    to produce an overall encoding from a sequence of time steps.
+    """
+    def __init__(self, step_model, use_cuda=True, use_prior=False):
+        super(ConfidenceWeightWrapper, self).__init__()
+        self.step_model = step_model
+        self.use_cuda = use_cuda
+        self.use_prior = use_prior
+
+    # x_batch has shape (time_steps, batch_size, x_size)
+    # only the last 2 layers are torch Tensors
+    def forward(self, x_batch, y_batch):
+        batch_size = x_batch[0].size()[0] # get dynamic batch size
+        w_enc_sum = Variable(torch.FloatTensor(batch_size,
+            self.step_model.enc0.size()[1]).cuda().zero_())
+        conf_sum = Variable(torch.FloatTensor(batch_size,
+            self.step_model.enc0.size()[1]).cuda().zero_())
+        if self.use_prior:
+            enc0_expand = self.step_model.enc0.repeat(batch_size,1)
+            conf0_expand = self.step_model.conf0.repeat(batch_size,1)
+            w_enc_sum += enc0_expand * conf0_expand
+            conf_sum += conf0_expand
+        # i = time step
+        for i, (x, y) in enumerate(zip(x_batch, y_batch)):
+            if self.use_cuda:
+                x, y = x.cuda(), y.cuda()
+            x, y = Variable(x), Variable(y)
+            local_enc, conf = self.step_model(x, y)
+            w_enc_sum += local_enc * conf
+            conf_sum += conf
+        return w_enc_sum / conf_sum
+
 """ MODELS """
 
 class BasicPredictNet(nn.Module):
@@ -95,7 +131,7 @@ class ParallelEncNet(nn.Module):
         super(ParallelEncNet, self).__init__()
 
         self.enc0 = Variable(torch.Tensor(np.zeros((1, widths[-1]))).cuda())
-        self.conf0 = Variable(torch.Tensor(np.zeros((1, widths[-1]))).cuda())
+        self.conf0 = Variable(torch.Tensor(np.ones((1, widths[-1]))).cuda())
 
         enc_weights = [x_size+y_size] + widths
 

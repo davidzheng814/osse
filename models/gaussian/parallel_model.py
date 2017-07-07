@@ -55,9 +55,9 @@ parser.add_argument('--pred-model', type=str, default='basic',
                     help='predictive model to use (basic/nonlinear)')
 parser.add_argument('--loss-fn', type=str, default='mse',
                     help='path to training data')
-parser.add_argument('--enc_widths', type=int, default=[25, 25],
+parser.add_argument('--enc-widths', type=int, default=[25, 25],
                     nargs='+', help='Size of encoder layers. Last width determines encoding size.')
-parser.add_argument('--pred_widths', type=int, default=[25, 25],
+parser.add_argument('--pred-widths', type=int, default=[25, 25],
                     nargs='+', help='Size of predictor layers (for nonlinear).')
 parser.add_argument('--dropout', type=float, default=0, help='Size of encoding.')
 parser.add_argument('--log', type=str, default="log.txt",
@@ -86,6 +86,8 @@ print "Data loaded."
 
 pred_model = networks.get_predictor(args.pred_model, args, x_size, y_size)
 enc_model = networks.get_encoder('parallel', args, x_size, y_size)
+enc_model_wrapper = networks.ConfidenceWeightWrapper(
+        enc_model, use_cuda=args.cuda, use_prior=args.use_prior)
 if args.cuda:
     pred_model.cuda()
     enc_model.cuda()
@@ -107,6 +109,41 @@ def zero_variable_(size, volatile=False):
         return Variable(torch.FloatTensor(*size).zero_(), volatile=volatile)
 
 """ TRAIN/TEST LOOPS """
+
+def train_epoch_wrapper(epoch):
+    tot_loss = 0
+    tot_loss_l1 = 0
+    num_samples = 0
+    start_time = time.time()
+    for batch_idx, batch in enumerate(train_loader):
+        batch_loss = zero_variable_((1,))
+        pred_optim.zero_grad()
+        enc_optim.zero_grad()
+
+        x_batch, y_batch = zip(*batch)
+        enc = enc_model_wrapper(x_batch[:args.start_train_ind],
+                                y_batch[:args.start_train_ind]) 
+        for (x, y) in zip(x_batch, y_batch)[args.start_train_ind:]:
+            if args.cuda:
+                x, y = x.cuda(), y.cuda()
+            x, y = Variable(x), Variable(y)
+            pred, W_est = pred_model(x, enc)
+            if args.loss_fn == 'l1':
+                loss = l1(pred, y)
+            else:
+                loss = mse(pred, y)
+            batch_loss += loss
+            tot_loss += loss.data[0]
+            tot_loss_l1 += l1(pred,y).data[0]
+            num_samples += 1
+
+        batch_loss.backward()
+        pred_optim.step()
+        enc_optim.step()
+
+    print 'Time: {:.2f}s Epoch: {} Train Loss ({}): {:.3f} Train L1: {}'.format(
+        time.time() - start_time, epoch, args.loss_fn.upper(), tot_loss / num_samples,
+        tot_loss_l1 / num_samples)
 
 def train_epoch(epoch):
     tot_loss = 0
@@ -135,7 +172,7 @@ def train_epoch(epoch):
         if args.use_prior:
             enc0_expand = enc_model.enc0.repeat(batch_size,1)
             conf0_expand = enc_model.conf0.repeat(batch_size,1)
-            encs.append(enc0_expand)
+            encs.append(enc0_expand * conf0_expand)
             confs.append(conf0_expand)
         enc = None
 
