@@ -117,7 +117,29 @@ def train_epoch_rolling(epoch):
         enc_optim.zero_grad()
 
         x_batch, y_batch = zip(*batch)
-        enc = enc_model_wrapper(x_batch, y_batch) 
+        encs = enc_model_wrapper(x_batch, y_batch) 
+
+        for i, (x, y) in list(enumerate(zip(x_batch, y_batch)))[args.start_train_ind:]:
+            if args.cuda:
+                x, y = x.cuda(), y.cuda()
+            x, y = Variable(x), Variable(y)
+            pred, W_est = pred_model(x, encs[i])
+            if args.loss_fn == 'l1':
+                loss = l1(pred, y)
+            else:
+                loss = mse(pred, y)
+            batch_loss += loss
+            tot_loss += loss.data[0]
+            tot_loss_l1 += l1(pred,y).data[0]
+            num_samples += 1
+
+        batch_loss.backward()
+        pred_optim.step()
+        enc_optim.step()
+
+    print 'Time: {:.2f}s Epoch: {} Train Loss ({}): {:.3f} Train L1: {}'.format(
+        time.time() - start_time, epoch, args.loss_fn.upper(), tot_loss / num_samples,
+        tot_loss_l1 / num_samples)
 
 def train_epoch(epoch):
     tot_loss = 0
@@ -154,6 +176,40 @@ def train_epoch(epoch):
         time.time() - start_time, epoch, args.loss_fn.upper(), tot_loss / num_samples,
         tot_loss_l1 / num_samples)
 
+def test_epoch_rolling(epoch):
+    tot_loss = 0
+    tot_loss_l1 = 0
+    tot_loss_mse = 0
+    tot_loss_l1_gt = 0
+    W_loss = 0
+    num_samples = 0
+    for batch_idx, batch in enumerate(test_loader):
+        x_batch, y_batch = zip(*batch)
+        encs = enc_model_wrapper(x_batch, y_batch) 
+
+        for i, (x, y) in list(enumerate(zip(x_batch, y_batch)))[args.start_test_ind:]:
+            if args.cuda:
+                x, y = x.cuda(), y.cuda()
+            x, y = Variable(x, volatile=True), Variable(y, volatile=True)
+            pred, W = pred_model(x, encs[i])
+
+            loss_l1 = l1(pred, y)
+            tot_loss_l1 += loss_l1.data[0]
+            loss_mse = mse(pred, y)
+            tot_loss_mse += loss_mse.data[0]
+
+            real_W = Variable(test_set.weights[batch_idx])
+            x = x.unsqueeze(1)
+            pred_gt = torch.bmm(x, real_W)
+            loss_l1_gt = l1(pred_gt, y)
+            tot_loss_l1_gt += loss_l1_gt.data[0]
+
+            num_samples += 1
+
+    print 'Test Loss (L1): {:.3f} Test Loss (mse): {:.3f}'.format(
+            tot_loss_l1 / num_samples, tot_loss_mse / num_samples)
+    print 'GT Loss(L1): {:.3f}'.format(tot_loss_l1_gt / num_samples)
+    
 def test_epoch(epoch):
     tot_loss_l1 = 0
     tot_loss_mse = 0
@@ -162,12 +218,12 @@ def test_epoch(epoch):
     num_samples = 0
     for batch_idx, batch in enumerate(test_loader):
         x_batch, y_batch = zip(*batch)
-        enc = enc_model_wrapper(x_batch[:args.start_train_ind],
-                                y_batch[:args.start_train_ind]) 
-        for x, y in zip(x_batch, y_batch)[args.start_train_ind:]:
+        enc = enc_model_wrapper(x_batch[:args.start_test_ind],
+                                y_batch[:args.start_test_ind]) 
+        for x, y in zip(x_batch, y_batch)[args.start_test_ind:]:
             if args.cuda:
                 x, y = x.cuda(), y.cuda()
-            x, y = Variable(x, volatile=True), Variable(y)
+            x, y = Variable(x, volatile=True), Variable(y, volatile=True)
             pred, W = pred_model(x, enc)
             
             loss_l1 = l1(pred, y)
@@ -191,6 +247,6 @@ def test_epoch(epoch):
 
 if __name__ == '__main__':
     for epoch in range(1, args.epochs+1):
-        train_epoch(epoch)
-        test_epoch(epoch)
+        train_epoch_rolling(epoch)
+        test_epoch_rolling(epoch)
 

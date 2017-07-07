@@ -17,14 +17,6 @@ def get_wrapper(wrapper, encoder, args):
     else:
         raise RuntimeError("Wrapper " + wrapper + " not found!")
 
-def get_encoder_wrapper(model, args, x_size, y_size):
-    encoder = get_encoder(model, args, x_size, y_size)
-    if model == 'rnn' or model == 'lstm':
-        return RecurrentWrapper(encoder, args)
-    elif model == 'parallel':
-        return ConfidenceWeightWrapper(encoder, args)
-    raise RuntimeError("Encoder " + model + " not found!")
-
 def get_encoder(model, args, x_size, y_size):
     if model == 'rnn':
         return BasicEncNet(args.enc_widths[-1], x_size, y_size, use_lstm=False)
@@ -108,12 +100,12 @@ class RollingConfWrapper(nn.Module):
     Wraps a model that outputs a local encoding and confidence for each timestep.
     Outputs the encoding to use for every time step.
     """
-    def __init__(self, step_model, enc_width, use_cuda=True, use_prior=False):
+    def __init__(self, step_model, args):
         super(RollingConfWrapper, self).__init__()
         self.step_model = step_model
-        self.enc_width = enc_width
-        self.use_cuda = use_cuda
-        self.use_prior = use_prior
+        self.enc_width = args.enc_widths[-1]
+        self.use_cuda = args.cuda
+        self.use_prior = args.use_prior
 
     # x_batch has shape (time_steps, batch_size, x_size)
     # only the last 2 layers are torch Tensor
@@ -135,8 +127,8 @@ class RollingConfWrapper(nn.Module):
                 x, y = x.cuda(), y.cuda()
             x, y = Variable(x), Variable(y)
             local_enc, conf = self.step_model(x, y)
-            w_enc_sum[i+1] = local_enc * conf
-            conf_sum[i+1] = conf
+            w_encs[i+1] = local_enc * conf
+            confs[i+1] = conf
         return torch.cumsum(w_encs, dim=0) / torch.cumsum(confs, dim=0)
 
 """ PredNets """
