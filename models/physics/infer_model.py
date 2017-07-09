@@ -1,6 +1,8 @@
 '''Physics Mass Inference model.
 '''
 
+print "Importing"
+
 import argparse
 import os
 from os.path import join
@@ -18,6 +20,7 @@ from torch.autograd import Variable
 
 """ CONFIG """
 
+DATAROOT = '/data/vision/oliva/scenedataset/urops/scenelayout/.physics/'
 ROOT = '../..'
 parser = argparse.ArgumentParser(description='Physics mass inference model.')
 parser.add_argument('--seed', type=int, default=1, metavar='S',
@@ -28,7 +31,7 @@ parser.add_argument('--lr-enc', type=float, default=1e-4,
                     help='enc model learning rate')
 parser.add_argument('--epochs', type=int, default=10,
                     help='number of epochs')
-parser.add_argument('--data-dir', type=str, default=join(ROOT, 'datasets/physics/'),
+parser.add_argument('--data-dir', type=str, default=join(DATAROOT, ''),
                     help='path to training data')
 parser.add_argument('--batch-size', type=int, default=5,
                     help='batch size')
@@ -145,6 +148,8 @@ class ParallelEncNet(nn.Module):
 
 
 """ INITIALIZATIONS """
+
+print "Initializing"
 
 kwargs = {'num_workers': args.num_workers, 'pin_memory': True} if args.cuda else {'num_workers': 4}
 
