@@ -17,8 +17,8 @@ import torch.utils.data
 from torch.autograd import Variable
 
 import shared.networks as networks
+import shared.util as util
 import datasets
-import util
 
 """ CONFIG """
 
