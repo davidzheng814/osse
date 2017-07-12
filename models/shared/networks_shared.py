@@ -46,7 +46,6 @@ class RecurrentWrapper(BaseWrapper):
     """
     Wraps a model that outputs an encoding at every time step after receiving the
     previous encoding.
-    Outputs the encoding to use at every time step.
     """
     def __init__(self, step_model, args):
         super(RecurrentWrapper, self).__init__()
@@ -79,7 +78,6 @@ class RecurrentWrapper(BaseWrapper):
 class ConfidenceWeightWrapper(BaseWrapper):
     """
     Wraps a model that outputs a local encoding and confidence for each timestep.
-    Outputs the encoding to use for every time step.
     """
     def __init__(self, step_model, args):
         super(ConfidenceWeightWrapper, self).__init__()
@@ -106,7 +104,7 @@ class ConfidenceWeightWrapper(BaseWrapper):
             confs[0,:,:] = conf0_expand
         else:
             confs[0,:,:] = 1e-9 # Prevents nan in initial backprop
-        # i = time step
+
         for i, sample in enumerate(sample_batch[:-1]):
             if self.use_cuda:
                 sample = sample.cuda()
