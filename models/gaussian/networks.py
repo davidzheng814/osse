@@ -11,7 +11,8 @@ import util
 def get_wrapper(wrapper, encoder, args):
     wrappermap = {'confweight': ConfidenceWeightWrapper,
             'rollingconf': RollingConfWrapper,
-            'recurrent': RecurrentWrapper}
+            'recurrent': RecurrentWrapper,
+            'rollingrec': RollingRecWrapper}
     if wrapper in wrappermap:
         return wrappermap[wrapper](encoder, args)
     else:
@@ -46,13 +47,13 @@ class RecurrentWrapper(nn.Module):
         self.step_model = step_model
         self.use_cuda = args.cuda
         self.enc_width = args.enc_widths[-1]
+        self.enc0 = util.zero_variable((self.enc_width,), self.use_cuda)
 
     # x_batch has shape (time_steps, batch_size, x_size)
     # only the last 2 layers are torch Tensors
     def forward(self, x_batch, y_batch):
         batch_size = x_batch[0].size()[0] # get dynamic batch size
-        enc0 = util.zero_variable((batch_size, self.enc_width), self.use_cuda)
-        enc = enc0.clone()
+        enc = self.enc0.repeat(batch_size, 1)
         # i = time step
         for i, (x, y) in enumerate(zip(x_batch, y_batch)):
             if self.use_cuda:
@@ -60,6 +61,35 @@ class RecurrentWrapper(nn.Module):
             x, y = Variable(x), Variable(y)
             enc = self.step_model(x, y, enc)
         return enc
+
+class RollingRecWrapper(nn.Module):
+    """
+    Wraps a model that outputs an encoding at every time step after receiving the
+    previous encoding.
+    Outputs the encoding to use at every time step.
+    """
+    def __init__(self, step_model, args):
+        super(RollingRecWrapper, self).__init__()
+        self.step_model = step_model
+        self.use_cuda = args.cuda
+        self.enc_width = args.enc_widths[-1]
+        self.enc0 = util.zero_variable((self.enc_width,), self.use_cuda)
+
+    # x_batch has shape (time_steps, batch_size, x_size)
+    # only the last 2 layers are torch Tensors
+    def forward(self, x_batch, y_batch):
+        batch_size = x_batch[0].size()[0] # get dynamic batch size
+        enc = self.enc0.repeat(batch_size, 1)
+        encs = []
+        encs.append(enc)
+        # i = time step
+        for i, (x, y) in enumerate(zip(x_batch, y_batch)[:-1]):
+            if self.use_cuda:
+                x, y = x.cuda(), y.cuda()
+            x, y = Variable(x), Variable(y)
+            enc = self.step_model(x, y, enc)
+            encs.append(enc)
+        return encs
 
 class ConfidenceWeightWrapper(nn.Module):
     """
@@ -124,7 +154,7 @@ class RollingConfWrapper(nn.Module):
         else:
             confs[0,:,:] = 1e-9 # Prevents nan in initial backprop
         # i = time step
-        for i, (x, y) in enumerate(zip(x_batch[:-1], y_batch[:-1])):
+        for i, (x, y) in enumerate(zip(x_batch, y_batch)[:-1]):
             if self.use_cuda:
                 x, y = x.cuda(), y.cuda()
             x, y = Variable(x), Variable(y)

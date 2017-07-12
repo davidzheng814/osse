@@ -55,7 +55,7 @@ parser.add_argument('--test-on-train', action='store_true', default=False,
 parser.add_argument('--enc-model', type=str, default='parallel',
                     help='encoder model to use (rnn/lstm/parallel)')
 parser.add_argument('--enc-wrapper', type=str, default='confweight',
-                    help='wrapper to use (confweight/rollingconf/recurrent)')
+                    help='wrapper to use (confweight/recurrent/rollingconf/rollingrec)')
 parser.add_argument('--pred-model', type=str, default='basic',
                     help='predictive model to use (basic/nonlinear)')
 parser.add_argument('--loss-fn', type=str, default='mse',
@@ -248,5 +248,5 @@ def test_epoch(epoch):
 if __name__ == '__main__':
     for epoch in range(1, args.epochs+1):
         train_epoch_rolling(epoch)
-        #test_epoch_rolling(epoch)
+        test_epoch_rolling(epoch)
 
