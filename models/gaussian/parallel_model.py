@@ -24,9 +24,9 @@ ROOT = '../..'
 parser = argparse.ArgumentParser(description='Naive Model for Gaussian Prediction.')
 parser.add_argument('--seed', type=int, default=1, metavar='S',
                     help='random seed (default: 1)')
-parser.add_argument('--lr-pred', type=float, default=1e-4,
+parser.add_argument('--lr-pred', type=float, default=1e-3,
                     help='pred model learning rate')
-parser.add_argument('--lr-enc', type=float, default=1e-4,
+parser.add_argument('--lr-enc', type=float, default=1e-3,
                     help='enc model learning rate')
 parser.add_argument('--epochs', type=int, default=10,
                     help='number of epochs')
