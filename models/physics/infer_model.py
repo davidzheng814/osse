@@ -1,6 +1,8 @@
 '''Physics Mass Inference model.
 '''
 
+print "Importing"
+
 import argparse
 import os
 from os.path import join
@@ -18,6 +20,7 @@ from torch.autograd import Variable
 
 """ CONFIG """
 
+DATAROOT = '/data/vision/oliva/scenedataset/urops/scenelayout/.physics/'
 ROOT = '../..'
 parser = argparse.ArgumentParser(description='Physics mass inference model.')
 parser.add_argument('--seed', type=int, default=1, metavar='S',
@@ -28,8 +31,10 @@ parser.add_argument('--lr-enc', type=float, default=1e-4,
                     help='enc model learning rate')
 parser.add_argument('--epochs', type=int, default=10,
                     help='number of epochs')
-parser.add_argument('--data-dir', type=str, default=join(ROOT, 'datasets/physics/'),
+parser.add_argument('--data-dir', type=str, default=join(DATAROOT, ''),
                     help='path to training data')
+parser.add_argument('--log', type=str, default='log.txt',
+                    help='Store logs.')
 parser.add_argument('--batch-size', type=int, default=5,
                     help='batch size')
 parser.add_argument('--max-files', type=int, default=-1,
@@ -146,6 +151,8 @@ class ParallelEncNet(nn.Module):
 
 """ INITIALIZATIONS """
 
+print "Initializing"
+
 kwargs = {'num_workers': args.num_workers, 'pin_memory': True} if args.cuda else {'num_workers': 4}
 
 start_time = time.time()
@@ -169,6 +176,11 @@ l1 = nn.L1Loss()
 
 """ HELPERS """
 
+def log(text):
+    print text
+    with open(args.log, 'a') as f:
+        f.write(text + '\n')
+
 def zero_variable_(size, volatile=False):
     if args.cuda:
         return Variable(torch.cuda.FloatTensor(*size).zero_(), volatile=volatile)
@@ -179,7 +191,7 @@ def zero_variable_(size, volatile=False):
 
 def train_epoch(epoch):
     tot_loss = 0
-    num_samples = 0
+    num_batches = 0
     start_time = time.time()
     for batch_idx, (x, y) in enumerate(train_loader):
         enc_optim.zero_grad()
@@ -204,18 +216,18 @@ def train_epoch(epoch):
         enc = enc_sum / conf_sum
         loss = mse(enc, y)
         tot_loss += loss.data[0]
-        num_samples += 1
+        num_batches += 1
 
         loss.backward()
         enc_optim.step()
 
-    print 'Time: {:.2f}s Epoch: {} Train Loss ({}): {:.3f}'.format(
-        time.time() - start_time, epoch, args.loss_fn.upper(), tot_loss / num_samples)
+    log('Time: {:.2f}s Epoch: {} Train Loss ({}): {:.3f}'.format(
+        time.time() - start_time, epoch, args.loss_fn.upper(), tot_loss / num_batches))
 
 def test_epoch(epoch):
     l1_loss = 0
     mse_loss = 0
-    num_samples = 0
+    num_batches = 0
     start_time = time.time()
     for batch_idx, (x, y) in enumerate(test_loader):
         encs, confs = [], []
@@ -238,12 +250,12 @@ def test_epoch(epoch):
         enc = enc_sum / conf_sum
         l1_loss += l1(enc, y).data[0]
         mse_loss += mse(enc, y).data[0]
-        num_samples += 1
+        num_batches += 1
 
-    print 'Test Loss (L1): {:.3f} (MSE): {:.3f}'.format(l1_loss / num_samples, mse_loss / num_samples)
+    log('Test Loss (L1): {:.3f} (MSE): {:.3f}'.format(l1_loss / num_batches, mse_loss / num_batches))
 
 if __name__ == '__main__':
-    print "Start Training"
+    log("Start Training")
     for epoch in range(1, args.epochs+1):
         train_epoch(epoch)
         test_epoch(epoch)
