@@ -1,7 +1,7 @@
 '''Gaussian prediction using encoding with parallel.
 '''
 import sys
-sys.path.append('../shared')
+sys.path.append('..')
 
 import argparse
 import os
@@ -16,7 +16,7 @@ import torch.optim as optim
 import torch.utils.data
 from torch.autograd import Variable
 
-import networks_shared as networks
+import shared.networks as networks
 import datasets
 import util
 
