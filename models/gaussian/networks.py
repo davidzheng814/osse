@@ -36,7 +36,21 @@ def get_predictor(model, args, x_size, y_size):
 
 """ MODEL WRAPPERS """
 
-class RecurrentWrapper(nn.Module):
+class BaseWrapper(nn.Module):
+    def __init__(self):
+        super(BaseWrapper, self).__init__()
+    
+    def is_rolling(self):
+        return False
+
+class RollingWrapper(BaseWrapper):
+    def __init__(self):
+        super(RollingWrapper, self).__init__()
+    
+    def is_rolling(self):
+        return True
+
+class RecurrentWrapper(BaseWrapper):
     """
     Wraps a model that outputs an encoding at every time step after receiving the
     previous encoding.
@@ -62,7 +76,7 @@ class RecurrentWrapper(nn.Module):
             enc = self.step_model(x, y, enc)
         return enc
 
-class RollingRecWrapper(nn.Module):
+class RollingRecWrapper(RollingWrapper):
     """
     Wraps a model that outputs an encoding at every time step after receiving the
     previous encoding.
@@ -91,7 +105,7 @@ class RollingRecWrapper(nn.Module):
             encs.append(enc)
         return encs
 
-class ConfidenceWeightWrapper(nn.Module):
+class ConfidenceWeightWrapper(BaseWrapper):
     """
     Wraps a model that outputs a local encoding and confidence for each timestep.
     Outputs a single encoding.
@@ -126,7 +140,7 @@ class ConfidenceWeightWrapper(nn.Module):
             conf_sum += conf
         return w_enc_sum / conf_sum
 
-class RollingConfWrapper(nn.Module):
+class RollingConfWrapper(RollingWrapper):
     """
     Wraps a model that outputs a local encoding and confidence for each timestep.
     Outputs the encoding to use for every time step.
