@@ -248,5 +248,5 @@ def test_epoch(epoch):
 if __name__ == '__main__':
     for epoch in range(1, args.epochs+1):
         train_epoch_rolling(epoch)
-        test_epoch_rolling(epoch)
+        #test_epoch_rolling(epoch)
 

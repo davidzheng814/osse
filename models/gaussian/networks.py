@@ -121,6 +121,8 @@ class RollingConfWrapper(nn.Module):
             conf0_expand = self.step_model.conf0.repeat(batch_size,1)
             w_encs[0,:,:] = enc0_expand * conf0_expand
             confs[0,:,:] = conf0_expand
+        else:
+            confs[0,:,:] = 1e-9 # Prevents nan in initial backprop
         # i = time step
         for i, (x, y) in enumerate(zip(x_batch[:-1], y_batch[:-1])):
             if self.use_cuda:
@@ -129,7 +131,8 @@ class RollingConfWrapper(nn.Module):
             local_enc, conf = self.step_model(x, y)
             w_encs[i+1] = local_enc * conf
             confs[i+1] = conf
-        return torch.cumsum(w_encs, dim=0) / torch.cumsum(confs, dim=0)
+        result = torch.cumsum(w_encs, dim=0) / torch.cumsum(confs, dim=0)
+        return list(result)
 
 """ PredNets """
 
