@@ -3,6 +3,9 @@
 
 print "Importing"
 
+import sys
+sys.path.append('..')
+
 import argparse
 import os
 from os.path import join
@@ -18,7 +21,7 @@ import torch.optim as optim
 import torch.utils.data
 from torch.autograd import Variable
 
-import networks
+import shared.networks as networks
 
 """ CONFIG """
 
@@ -133,7 +136,7 @@ test_loader = torch.utils.data.DataLoader(test_set,
 
 x_size = train_set.x_size
 
-enc_model = networks.ParallelEncNet(args.widths, x_size)
+enc_model = networks.ParallelEncNet(args.widths + [1], x_size) # + [1] for mass
 if args.cuda:
     enc_model.cuda()
 
