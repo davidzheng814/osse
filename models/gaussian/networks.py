@@ -110,9 +110,10 @@ class ConfidenceWeightWrapper(nn.Module):
         batch_size = x_batch[0].size()[0] # get dynamic batch size
         w_enc_sum = util.zero_variable((batch_size, self.enc_width), self.use_cuda)
         conf_sum = util.zero_variable((batch_size, self.enc_width), self.use_cuda)
+        enc0, conf0 = self.step_model.get_enc_conf0()
         if self.use_prior:
-            enc0_expand = self.step_model.enc0.repeat(batch_size,1)
-            conf0_expand = self.step_model.conf0.repeat(batch_size,1)
+            enc0_expand = enc0.repeat(batch_size,1)
+            conf0_expand = conf0.repeat(batch_size,1)
             w_enc_sum += enc0_expand * conf0_expand
             conf_sum += conf0_expand
         # i = time step
@@ -146,9 +147,10 @@ class RollingConfWrapper(nn.Module):
                 self.use_cuda)
         confs = util.zero_variable((n_time_steps, batch_size, self.enc_width),
                 self.use_cuda)
+        enc0, conf0 = self.step_model.get_enc_conf0()
         if self.use_prior:
-            enc0_expand = self.step_model.enc0.repeat(batch_size,1)
-            conf0_expand = self.step_model.conf0.repeat(batch_size,1)
+            enc0_expand = enc0.repeat(batch_size,1)
+            conf0_expand = conf0.repeat(batch_size,1)
             w_encs[0,:,:] = enc0_expand * conf0_expand
             confs[0,:,:] = conf0_expand
         else:
@@ -247,6 +249,9 @@ class ParallelEncNet(nn.Module):
                 nn.Linear(inp, out) for inp, out in zip(enc_weights[:-1], enc_weights[1:])])
         self.conf_linears = nn.ModuleList([
                 nn.Linear(inp, out) for inp, out in zip(enc_weights[:-1], enc_weights[1:])])
+
+    def get_enc_conf0(self):
+        return self.enc0, self.conf0
 
     def forward(self, x, y):
         h = torch.cat((x, y), dim=1)
