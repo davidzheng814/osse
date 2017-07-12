@@ -46,6 +46,8 @@ parser.add_argument('--weight-ind', type=int, default=-1,
                     help='If set, print weight matrix of test set at ind')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='disables CUDA training')
+parser.add_argument('--rolling', action='store_true', default=False,
+                    help='whether or not using a rolling wrapper')
 parser.add_argument('--normalize', action='store_true', default=False,
                     help='normalize inputs and outputs to [-1, 1]')
 parser.add_argument('--use-prior', action='store_true', default=False,
@@ -117,11 +119,13 @@ def train_epoch(epoch):
         enc_optim.zero_grad()
 
         x_batch, y_batch = zip(*batch)
+        sample_batch = torch.cat([torch.stack(x_batch), torch.stack(y_batch)], dim=2)
+
         if enc_model_wrapper.is_rolling():
-            encs = enc_model_wrapper(x_batch, y_batch) 
+            encs = enc_model_wrapper(sample_batch) 
         else:
-            enc = enc_model_wrapper(x_batch[:args.start_train_ind],
-                                    y_batch[:args.start_train_ind]) 
+            enc = enc_model_wrapper(sample_batch[:args.start_train_ind]) 
+
         for i, (x, y) in enumerate(zip(x_batch, y_batch)[args.start_train_ind:]):
             if args.cuda:
                 x, y = x.cuda(), y.cuda()
@@ -155,11 +159,13 @@ def test_epoch(epoch):
     num_samples = 0
     for batch_idx, batch in enumerate(test_loader):
         x_batch, y_batch = zip(*batch)
+        sample_batch = torch.cat([torch.stack(x_batch), torch.stack(y_batch)], dim=2)
+
         if enc_model_wrapper.is_rolling():
-            encs = enc_model_wrapper(x_batch, y_batch) 
+            encs = enc_model_wrapper(sample_batch) 
         else:
-            enc = enc_model_wrapper(x_batch[:args.start_train_ind],
-                                    y_batch[:args.start_train_ind]) 
+            enc = enc_model_wrapper(sample_batch[:args.start_train_ind]) 
+
         for i, (x, y) in enumerate(zip(x_batch, y_batch)[args.start_test_ind:]):
             if args.cuda:
                 x, y = x.cuda(), y.cuda()
