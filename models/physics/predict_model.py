@@ -15,7 +15,6 @@ import torch.utils.data
 from torch.autograd import Variable
 
 # TODO Use rollouts with discounting.
-# TODO Double check that network is correct.
 # TODO Add noise.
 
 """ CONFIG """
@@ -90,11 +89,13 @@ class PhysicsDataset(torch.utils.data.Dataset):
 
         with np.load(self.files[0]) as data:
             self.n_objects = data['x'].shape[1] 
-            self.state_size = data['x'].shape[2]
+            self.state_size = data['x'].shape[2] + 1 # Add 1 for mass
 
     @staticmethod
     def to_list(x, masses):
-        x = np.concatenate([x, np.tile(masses, (x.shape[0], x.shape[1], 1))], axis=2)
+        masses = np.tile(masses, (x.shape[0], 1))
+        masses = np.reshape(masses, (x.shape[0], -1, 1))
+        x = np.concatenate([x, masses], axis=2)
         x = list(x.astype(np.float32))
         return x
 
@@ -175,7 +176,7 @@ class RelationNet(nn.Module):
         h = h.view(-1, self.inp_size)
         h = self.MLP(h)
         h = h.view(-1, self.n_objects-1, self.n_objects, self.code_size)
-        h = torch.sum(h, 1).squeeze()
+        h = torch.sum(h, 1).view(-1, self.code_size)
 
         return h
 
@@ -192,12 +193,11 @@ class InteractionNet(nn.Module):
         self.agg_net = MLP([2*code_size, 32, code_size])
 
     def forward(self, x):
-        pair_enc = self.re_net(x).view(-1, self.code_size)
-        flat_x = x.view(-1, self.code_size)
-        ind_enc = self.sd_net(flat_x)
-        g_enc = self.aff_net(flat_x + pair_enc)
+        pair_enc = self.re_net(x.view(-1, self.n_objects, self.code_size))
+        ind_enc = self.sd_net(x)
+        g_enc = self.aff_net(ind_enc + pair_enc)
 
-        h = torch.cat([flat_x, g_enc], dim=1)
+        h = torch.cat([x, g_enc], dim=1)
         h = self.agg_net(h)
 
         return h
@@ -210,12 +210,11 @@ class StateCodeModel(nn.Module):
         self.code_size = code_size
         self.n_frames = n_frames
         self.linear = nn.Linear(state_size, code_size)
-        self.mlp = MLP([n_frames*code_size, code_size, code_size], reshape=True, n_objects=n_objects)
+        self.mlp = MLP([n_frames*code_size, code_size, code_size])
 
     def forward(self, x):
-        x = [self.linear(inp.view(-1, self.state_size))
-                         .view(-1, self.n_frames, self.code_size) for inp in x]
-        h = torch.cat(x, dim=2)
+        x = [self.linear(inp) for inp in x]
+        h = torch.cat(x, dim=1)
         h = self.mlp(h)
 
         return h
@@ -231,7 +230,7 @@ class PredictNet(nn.Module):
         self.inets = nn.ModuleList([
             InteractionNet(n_objects, code_size) for _ in range(num_offsets)])
 
-        self.agg = MLP([num_offsets * code_size, 32, code_size])
+        self.agg = MLP([num_offsets * code_size, code_size, code_size])
 
     def forward(self, inps):
         preds = []
@@ -240,8 +239,6 @@ class PredictNet(nn.Module):
 
         h = torch.cat(preds, dim=1)
         h = self.agg(h)
-
-        h = h.view(-1, self.n_objects, self.code_size)
 
         return h
 
@@ -261,7 +258,7 @@ pred_model = PredictNet(n_objects, args.code_size, num_offsets)
 if num_devices > 1:
     pred_model = nn.DataParallel(pred_model, device_ids=range(num_devices))
 state_to_code_model = StateCodeModel(args.n_frames, state_size, args.code_size, n_objects)
-code_to_state_model = MLP([args.code_size, state_size], reshape=True, n_objects=n_objects)
+code_to_state_model = nn.Linear(args.code_size, state_size)
 
 if args.cuda:
     pred_model.cuda()
@@ -276,7 +273,7 @@ def set_lr(lr):
             list(code_to_state_model.parameters()),
             lr=lr)
 
-lr_lambda = lambda epoch: args.lr_pred * math.e ** (-(epoch-1) * len(train_set) / args.alpha)
+lr_lambda = lambda epoch: args.lr_pred * max(0.03, math.e ** (-(epoch-1) * len(train_set) / args.alpha))
 
 mse = nn.MSELoss()
 l1 = nn.L1Loss()
@@ -303,12 +300,14 @@ def process_batch(x, train):
     if args.cuda:
         x = [samp.cuda() for samp in x]
     x = [Variable(samp, volatile=not train) for samp in x]
+    x = [samp.view(-1, state_size) for samp in x]
 
     mse_loss = zero_variable_((1,), volatile=not train)
     if not train:
         l1_loss = zero_variable_((1,), volatile=not train)
         base_l1_loss = zero_variable_((1,), volatile=not train)
 
+    aux_loss = 0
     # Add auxiliary losses
     codes = [None for _ in range(args.n_frames-1)]
     for start_ind in range(len(x)-args.n_frames+1):
@@ -317,7 +316,9 @@ def process_batch(x, train):
         code = state_to_code_model(inp)
         state = code_to_state_model(code)
 
-        mse_loss += mse(state, out)
+        # aux_loss_ = mse(state, out)
+        # mse_loss += aux_loss_
+        # aux_loss += aux_loss_.data[0]
 
         codes.append(code)
 
@@ -333,9 +334,9 @@ def process_batch(x, train):
         if args.rollout_ind and i >= args.rollout_ind:
             codes[i] = pred_code
 
-        mse_loss += mse(pred, true_state)
+        mse_loss += mse(pred+x[i-1], true_state)
         if not train:
-            l1_loss += l1(pred, true_state)
+            l1_loss += l1(pred+x[i-1], true_state)
             base_l1_loss += l1(x[i-1], true_state)
         num_preds += 1
 
@@ -344,38 +345,40 @@ def process_batch(x, train):
         pred_optim.step()
 
     if train:
-        return mse_loss.data[0]
+        return mse_loss.data[0], aux_loss
     else:
-        return mse_loss.data[0], l1_loss.data[0], base_l1_loss.data[0], num_preds
+        return mse_loss.data[0], aux_loss, l1_loss.data[0], base_l1_loss.data[0], num_preds
 
 def train_epoch(epoch):
     lr = lr_lambda(epoch) if args.anneal else args.lr_pred
     log('New learning rate: {:.6f}'.format(lr))
     set_lr(lr)
 
-    mse_loss, num_batches = 0, 0
+    mse_loss, aux_loss, num_batches = 0, 0, 0
     start_time = time.time()
     for batch_idx, x in enumerate(train_loader):
-        mse_loss_ = process_batch(x, train=True)
+        mse_loss_, aux_loss_ = process_batch(x, train=True)
         mse_loss += mse_loss_
+        aux_loss += aux_loss_
         num_batches += 1
 
-    log('Time: {:.2f}s Epoch: {} Train Loss ({}): {:.3f}'.format(
-        time.time() - start_time, epoch, args.loss_fn.upper(), mse_loss / num_batches))
+    log('Time: {:.2f}s Epoch: {} Train Loss ({}): {:.3f} Aux {:.3f}'.format(
+        time.time() - start_time, epoch, args.loss_fn.upper(), mse_loss / num_batches, aux_loss / num_batches))
 
 def test_epoch(epoch):
-    mse_loss, l1_loss, base_l1_loss, num_batches, num_preds = 0, 0, 0, 0, 0
+    mse_loss, aux_loss, l1_loss, base_l1_loss, num_batches, num_preds = 0, 0, 0, 0, 0, 0
     start_time = time.time()
     for batch_idx, x in enumerate(test_loader):
-        mse_loss_, l1_loss_, base_l1_loss_, num_preds_ = process_batch(x, train=False)
+        mse_loss_, aux_loss_, l1_loss_, base_l1_loss_, num_preds_ = process_batch(x, train=False)
         num_preds += num_preds_
         mse_loss += mse_loss_
+        aux_loss += aux_loss_
         l1_loss += l1_loss_
         base_l1_loss += base_l1_loss_
         num_batches += 1
 
-    log('Test Loss (L1): {:.3f} Base (L1): {:.3f} (MSE): {:.3f}'.format(
-        l1_loss / num_preds, base_l1_loss / num_preds, mse_loss / num_batches))
+    log('Test Loss (L1): {:.3f} Base (L1): {:.3f} (MSE): {:.3f} Aux {:.3f}'.format(
+        l1_loss / num_preds, base_l1_loss / num_preds, mse_loss / num_batches, aux_loss / num_batches))
 
 if __name__ == '__main__':
     log("Start Training")

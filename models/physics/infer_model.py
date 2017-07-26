@@ -61,6 +61,8 @@ parser.add_argument('--loss-fn', type=str, default='mse',
                     help='path to training data')
 parser.add_argument('--widths', type=int, default=[50, 50],
                     nargs='+', help='Size of encodings.')
+parser.add_argument('--tf-widths', type=int, default=[25, 25],
+                    nargs='+', help='Size of transform layer.')
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -104,6 +106,7 @@ class PhysicsDataset(torch.utils.data.Dataset):
 
         with np.load(self.files[0]) as data:
             self.x_size = data['x'].shape[1] * data['x'].shape[2]
+            self.y_size = data['y'].shape[0]
 
     @staticmethod
     def to_list(x):
@@ -116,7 +119,7 @@ class PhysicsDataset(torch.utils.data.Dataset):
     def __getitem__(self, key):
         with np.load(self.files[key]) as data:
             x = PhysicsDataset.to_list(data['x'])
-            y = float(data['y'])
+            y = data['y']
 
         return x, y
 
@@ -135,6 +138,8 @@ test_loader = torch.utils.data.DataLoader(test_set,
     batch_size=args.batch_size, shuffle=False, collate_fn=collate,  **kwargs)
 
 x_size = train_set.x_size
+y_size = train_set.y_size
+print y_size
 
 enc_model = networks.ParallelEncNet(args.widths + [1], x_size) # + [1] for mass
 if args.cuda:
@@ -185,7 +190,8 @@ def train_epoch(epoch):
         enc_sum = torch.stack(encs).sum(0)[0]
         conf_sum = torch.stack(confs).sum(0)[0]
         enc = enc_sum / conf_sum
-        loss = mse(enc, y)
+        tf_enc = tform_model(enc)
+        loss = mse(tf_enc, y)
         tot_loss += loss.data[0]
         num_batches += 1
 
@@ -219,8 +225,9 @@ def test_epoch(epoch):
         enc_sum = torch.stack(encs).sum(0)[0]
         conf_sum = torch.stack(confs).sum(0)[0]
         enc = enc_sum / conf_sum
-        l1_loss += l1(enc, y).data[0]
-        mse_loss += mse(enc, y).data[0]
+        tf_enc = tform_model(enc)
+        l1_loss += l1(tf_enc, y).data[0]
+        mse_loss += mse(tf_enc, y).data[0]
         num_batches += 1
 
     log('Test Loss (L1): {:.3f} (MSE): {:.3f}'.format(l1_loss / num_batches, mse_loss / num_batches))
