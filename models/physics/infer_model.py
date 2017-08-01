@@ -12,6 +12,7 @@ from os.path import join
 import glob
 import numpy as np
 import time
+from tqdm import tqdm
 import math
 
 import torch
@@ -25,14 +26,14 @@ import shared.networks as networks
 
 """ CONFIG """
 
-DATAROOT = '/data/vision/oliva/scenedataset/urops/scenelayout/.physics/'
+DATAROOT = '/data/vision/oliva/scenedataset/urops/scenelayout/.physics_n3/'
 ROOT = '../..'
 parser = argparse.ArgumentParser(description='Physics mass inference model.')
 parser.add_argument('--seed', type=int, default=1, metavar='S',
                     help='random seed (default: 1)')
-parser.add_argument('--lr-pred', type=float, default=1e-4,
-                    help='pred model learning rate')
-parser.add_argument('--lr-enc', type=float, default=1e-4,
+parser.add_argument('--lr-trans', type=float, default=1e-3,
+                    help='transform model learning rate')
+parser.add_argument('--lr-enc', type=float, default=1e-3,
                     help='enc model learning rate')
 parser.add_argument('--epochs', type=int, default=10,
                     help='number of epochs')
@@ -57,16 +58,22 @@ parser.add_argument('--num-workers', type=int, default=4,
 parser.add_argument('--use-lstm', action="store_true", help='Use LSTM for Enc Model')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='disables CUDA training')
+parser.add_argument('--no-prior', action='store_true', default=False,
+                    help='disables use of prior')
+parser.add_argument('--rolling', action='store_true', default=False,
+                    help='trains the model on rolling updates of the encoding')
 parser.add_argument('--loss-fn', type=str, default='mse',
                     help='path to training data')
 parser.add_argument('--widths', type=int, default=[50, 50],
                     nargs='+', help='Size of encodings.')
-parser.add_argument('--tf-widths', type=int, default=[25, 25],
+parser.add_argument('--trans-widths', type=int, default=[25, 25],
                     nargs='+', help='Size of transform layer.')
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
+args.use_prior = not args.no_prior
 args.loss_fn = args.loss_fn.lower()
+args.enc_widths = args.widths
 
 torch.manual_seed(args.seed)
 if args.cuda:
@@ -103,7 +110,6 @@ class PhysicsDataset(torch.utils.data.Dataset):
         else:
             self.files = self.files[-args.test_files:]
 
-
         with np.load(self.files[0]) as data:
             self.x_size = data['x'].shape[1] * data['x'].shape[2]
             self.y_size = data['y'].shape[0]
@@ -139,13 +145,16 @@ test_loader = torch.utils.data.DataLoader(test_set,
 
 x_size = train_set.x_size
 y_size = train_set.y_size
-print y_size
 
-enc_model = networks.ParallelEncNet(args.widths + [1], x_size) # + [1] for mass
+enc_model = networks.ParallelEncNet(args.enc_widths, x_size) # + [1] for mass
+enc_model_wrapper = networks.get_wrapper('confweight', enc_model, args)
+trans_model = networks.TransformNet(args.enc_widths[-1], args.trans_widths,  y_size)
 if args.cuda:
     enc_model.cuda()
+    trans_model.cuda()
 
 enc_optim = optim.Adam(enc_model.parameters(), lr=args.lr_enc)
+trans_optim = optim.Adam(trans_model.parameters(), lr=args.lr_trans)
 
 mse = nn.MSELoss()
 l1 = nn.L1Loss()
@@ -169,8 +178,9 @@ def train_epoch(epoch):
     tot_loss = 0
     num_batches = 0
     start_time = time.time()
-    for batch_idx, (x, y) in enumerate(train_loader):
+    for batch_idx, (x, y) in enumerate(tqdm(train_loader)):
         enc_optim.zero_grad()
+        trans_optim.zero_grad()
 
         encs, confs = [], []
 
@@ -190,13 +200,14 @@ def train_epoch(epoch):
         enc_sum = torch.stack(encs).sum(0)[0]
         conf_sum = torch.stack(confs).sum(0)[0]
         enc = enc_sum / conf_sum
-        tf_enc = tform_model(enc)
+        tf_enc = trans_model(enc)
         loss = mse(tf_enc, y)
         tot_loss += loss.data[0]
         num_batches += 1
 
         loss.backward()
         enc_optim.step()
+        trans_optim.step()
 
     log('Time: {:.2f}s Epoch: {} Train Loss ({}): {:.3f}'.format(
         time.time() - start_time, epoch, args.loss_fn.upper(), tot_loss / num_batches))
@@ -206,7 +217,7 @@ def test_epoch(epoch):
     mse_loss = 0
     num_batches = 0
     start_time = time.time()
-    for batch_idx, (x, y) in enumerate(test_loader):
+    for batch_idx, (x, y) in enumerate(tqdm(test_loader)):
         encs, confs = [], []
 
         if args.cuda:
@@ -225,7 +236,7 @@ def test_epoch(epoch):
         enc_sum = torch.stack(encs).sum(0)[0]
         conf_sum = torch.stack(confs).sum(0)[0]
         enc = enc_sum / conf_sum
-        tf_enc = tform_model(enc)
+        tf_enc = trans_model(enc)
         l1_loss += l1(tf_enc, y).data[0]
         mse_loss += mse(tf_enc, y).data[0]
         num_batches += 1
