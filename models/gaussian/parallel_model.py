@@ -133,7 +133,7 @@ def train_epoch(epoch):
                 x, y = x.cuda(), y.cuda()
             x, y = Variable(x), Variable(y)
             if enc_model_wrapper.is_rolling():
-                pred, W_est = pred_model(x, encs[i])
+                pred, W_est = pred_model(x, encs[i+args.start_train_ind])
             else:
                 pred, W_est = pred_model(x, enc)
             if args.loss_fn == 'l1':
@@ -173,7 +173,7 @@ def test_epoch(epoch):
                 x, y = x.cuda(), y.cuda()
             x, y = Variable(x, volatile=True), Variable(y, volatile=True)
             if enc_model_wrapper.is_rolling():
-                pred, W_est = pred_model(x, encs[i])
+                pred, W_est = pred_model(x, encs[i+args.start_train_ind])
             else:
                 pred, W_est = pred_model(x, enc)
             
