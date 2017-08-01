@@ -52,7 +52,7 @@ class RecurrentWrapper(BaseWrapper):
         self.step_model = step_model
         self.use_cuda = args.cuda
         self.enc_width = args.enc_widths[-1]
-        self.enc0 = util.zero_variable((self.enc_width,), self.use_cuda)
+        self.enc0 = nn.Parameter(torch.Tensor(np.zeros((self.enc_width,))).cuda())
         self.rolling = args.rolling
 
     # sample_batch has shape (time_steps, batch_size, x_size)
@@ -155,6 +155,25 @@ class NLPredictNet(nn.Module):
         h = torch.bmm(x, W).squeeze()
         return h, W
 
+""" TransformNets """
+
+class TransformNet(nn.Module):
+    '''
+    Transforms an encoding directly into a prediction with no additional input.
+    '''
+    def __init__(self, enc_size, widths, y_size):
+        super(TransformNet, self).__init__()
+        layer_sizes = [enc_size] + widths
+        model = []
+        for in_width, out_width in zip(layer_sizes[:-1], layer_sizes[1:]):
+            model += [nn.Linear(in_width, out_width)]
+            model += [nn.ReLU()]
+        model.append(nn.Linear(widths[-1], y_size))
+        self.model = nn.Sequential(*model)
+
+    def forward(self, enc):
+        return self.model(enc)
+
 """ EncNets """
 
 class BasicEncNet(nn.Module):
@@ -193,8 +212,8 @@ class ParallelEncNet(nn.Module):
     def __init__(self, widths, sample_size):
         super(ParallelEncNet, self).__init__()
 
-        self.enc0 = Variable(torch.Tensor(np.zeros((1, widths[-1]))).cuda())
-        self.conf0 = Variable(torch.Tensor(np.ones((1, widths[-1]))).cuda())
+        self.enc0 = nn.Parameter(torch.Tensor(np.zeros((1, widths[-1]))).cuda())
+        self.conf0 = nn.Parameter(torch.Tensor(np.ones((1, widths[-1]))).cuda())
 
         enc_weights = [sample_size] + widths
 
