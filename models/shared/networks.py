@@ -1,3 +1,5 @@
+from operator import mul
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -7,6 +9,12 @@ import torch.utils.data
 from torch.autograd import Variable
 
 import util
+
+# Number of trainable scalar parameters in model
+def num_params(model):
+    parameters = list(model.parameters())
+    sizes = [reduce(mul, p.size(), 1) for p in parameters if p.requires_grad]
+    return sum(sizes)
 
 def get_wrapper(wrapper, encoder, args):
     wrappermap = {'confweight': ConfidenceWeightWrapper,
