@@ -11,6 +11,7 @@ import os
 from os.path import join
 import glob
 import numpy as np
+import random
 import time
 from tqdm import tqdm
 import math
@@ -72,6 +73,8 @@ parser.add_argument('--trans-widths', type=int, default=[25, 25],
                     nargs='+', help='Size of transform layer.')
 parser.add_argument('--num-sequential-frames', type=int, default=4,
                     help='Number of sequential frames to use for training')
+parser.add_argument('--mem-cache', action='store_true', default=False,
+                    help='caches all loaded files in memory')
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -81,11 +84,12 @@ args.enc_widths = args.widths
 args.rolling = True
 
 if args.progbar:
-    progbar = tqdm
+    progbar = lambda x: tqdm(x, leave=False)
 else:
     progbar = lambda x: x
 
 torch.manual_seed(args.seed)
+random.seed(args.seed)
 if args.cuda:
     torch.cuda.manual_seed(args.seed)
 
@@ -142,6 +146,32 @@ class PhysicsDataset(torch.utils.data.Dataset):
 
         return x, y
 
+class CachedDataLoader:
+    def __init__(self, loader, cache):
+        self.loader_iter = loader.__iter__()
+        self.cache = cache
+
+    def __len__(self):
+        return len(self.loader_iter)
+
+    def __iter__(self):
+        return self
+
+    def next(self):
+        result = self.loader_iter.next()
+        self.cache += [result]
+        return result
+
+# Will randomly shuffle cached data
+def get_loader_or_cache(loader, cache):
+    if cache is None:
+        return loader
+    elif len(cache) == 0:
+        return CachedDataLoader(loader, cache)
+    else:
+        random.shuffle(cache)
+        return cache
+
 """ INITIALIZATIONS """
 
 print "Initializing"
@@ -155,6 +185,13 @@ train_loader = torch.utils.data.DataLoader(train_set, collate_fn=collate,
 test_set = PhysicsDataset(train=False)
 test_loader = torch.utils.data.DataLoader(test_set, collate_fn=collate,
     batch_size=args.batch_size, shuffle=False,  **kwargs)
+
+# In memory caching
+train_cache = None
+test_cache = None
+if args.mem_cache:
+    train_cache = []
+    test_cache = []
 
 x_size = train_set.x_size
 y_size = train_set.y_size
@@ -191,7 +228,9 @@ def train_epoch(epoch):
     tot_loss = 0
     num_batches = 0
     start_time = time.time()
-    for batch_idx, (x, y) in enumerate(progbar(train_loader)):
+    compute_time = 0.
+    loader = get_loader_or_cache(train_loader, train_cache)
+    for batch_idx, (x, y) in enumerate(progbar(loader)):
         enc_optim.zero_grad()
         trans_optim.zero_grad()
 
@@ -199,6 +238,7 @@ def train_epoch(epoch):
             y = y.cuda()
         y = Variable(y)
 
+        start_compute = time.time()
         encs = enc_model_wrapper(x)
         batch_loss = 0
         for enc in encs[args.start_train_ind:]:
@@ -211,15 +251,19 @@ def train_epoch(epoch):
         enc_optim.step()
         trans_optim.step()
 
-    log('Time: {:.2f}s Epoch: {} Train Loss ({}): {:.3f}'.format(
-        time.time() - start_time, epoch, args.loss_fn.upper(), tot_loss / num_batches))
+        compute_time += time.time() - start_compute
+
+    log('Epoch: {}, Train Loss ({}): {:.3f}, Time: {:.2f}s, Compute: {:.2f}s'.format(
+        epoch, args.loss_fn.upper(), tot_loss / num_batches, time.time() - start_time, 
+        compute_time))
 
 def test_epoch(epoch):
     l1_loss = 0
     mse_loss = 0
     num_batches = 0
     start_time = time.time()
-    for batch_idx, (x, y) in enumerate(progbar(test_loader)):
+    loader = get_loader_or_cache(test_loader, test_cache)
+    for batch_idx, (x, y) in enumerate(progbar(loader)):
         if args.cuda:
             y = y.cuda()
         y = Variable(y)
@@ -232,7 +276,8 @@ def test_epoch(epoch):
             mse_loss += mse(tf_enc, y).data[0]
             num_batches += 1
 
-    log('Test Loss (L1): {:.3f} (MSE): {:.3f}'.format(l1_loss / num_batches, mse_loss / num_batches))
+    log('Epoch: {}, Test Loss (L1): {:.3f}, (MSE): {:.3f}'.format(epoch,
+        l1_loss / num_batches, mse_loss / num_batches))
 
 if __name__ == '__main__':
     log("Start Training")
