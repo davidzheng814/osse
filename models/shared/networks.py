@@ -137,7 +137,6 @@ class ConfidenceWeightWrapper(BaseWrapper):
         for i, sample in enumerate(sample_batch[:-1]):
             if self.use_cuda:
                 sample = sample.cuda()
-            sample = Variable(sample)
             local_enc, conf = self.step_model(sample)
             w_encs[i+1] = local_enc * conf
             confs[i+1] = conf
@@ -249,11 +248,16 @@ class LSTMEncNet(nn.Module):
         return h, new_states
 
 class ParallelEncNet(nn.Module):
-    def __init__(self, widths, sample_size):
+    def __init__(self, widths, sample_size, args):
         super(ParallelEncNet, self).__init__()
 
-        self.enc0 = nn.Parameter(torch.Tensor(np.zeros((1, widths[-1]))).cuda())
-        self.conf0 = nn.Parameter(torch.Tensor(np.ones((1, widths[-1]))).cuda())
+        self.enc0 = torch.Tensor(np.zeros((1, widths[-1])))
+        self.conf0 =torch.Tensor(np.ones((1, widths[-1])))
+        if args.cuda:
+            self.enc0.cuda()
+            self.conf0.cuda()
+        self.enc0 = nn.Parameter(self.enc0)
+        self.conf0 = nn.Parameter(self.conf0)
 
         enc_weights = [sample_size] + widths
 
@@ -281,3 +285,135 @@ class ParallelEncNet(nn.Module):
                 conf = F.relu(lin(conf))
 
         return h, conf
+
+class MLP(nn.Module):
+    def __init__(self, widths, reshape=False, tanh=False, relu=True, n_objects=None):
+        """ Only set n_objects if reshape = True"""
+        super(MLP, self).__init__()
+
+        self.reshape = reshape
+        self.relu = relu
+        self.tanh = tanh
+        self.n_objects = n_objects
+        self.widths = widths
+        self.linears = nn.ModuleList([
+            nn.Linear(inp, out) for inp, out in zip(widths[:-1], widths[1:])])
+
+    def forward(self, x):
+        if self.reshape:
+            h = x.view(-1, self.widths[0])
+        else:
+            h = x
+
+        for i, lin in enumerate(self.linears):
+            h = lin(h)
+            if i != len(self.linears) - 1:
+                if self.relu:
+                    h = F.relu(h)
+                elif self.tanh:
+                    h = F.tanh(h)
+
+        if self.reshape:
+            h = h.view(-1, self.n_objects, self.widths[-1])
+
+        return h
+
+class RelationNet(nn.Module):
+    def __init__(self, n_objects, code_size, args):
+        """Cross product concatenation. 
+        Takes in code [batch_size, n_objects, code_size].
+        Returns code [batch_size, n_objects, code_size].
+        """
+        super(RelationNet, self).__init__()
+
+        self.n_objects = n_objects
+        self.code_size = code_size
+        self.inp_size = 2 * code_size
+        self.MLP = MLP([self.inp_size, code_size, code_size, code_size])
+
+        index = []
+        inds = range(n_objects)
+        for i in range(1, n_objects):
+            inds = inds[-1:] + inds[:-1]
+            index.extend(inds)
+
+        if args.cuda:
+            self.index = Variable(torch.cuda.LongTensor(index))
+        else:
+            self.index = Variable(torch.LongTensor(index))
+
+    def forward(self, x):
+        base = x.repeat(1, self.n_objects-1, 1)
+        scrambled = torch.index_select(base, 1, self.index)
+
+        h = torch.cat([base, scrambled], dim=2)
+        h = h.view(-1, self.inp_size)
+        h = self.MLP(h)
+        h = h.view(-1, self.n_objects-1, self.n_objects, self.code_size)
+        h = torch.sum(h, 1).view(-1, self.code_size)
+
+        return h
+
+class InteractionNet(nn.Module):
+    def __init__(self, n_objects, code_size, args):
+        super(InteractionNet, self).__init__()
+
+        self.n_objects = n_objects
+        self.code_size = code_size
+
+        self.re_net = RelationNet(n_objects, code_size, args)
+        self.sd_net = MLP([code_size, code_size, code_size])
+        self.aff_net = MLP([code_size, code_size, code_size, code_size])
+        self.agg_net = MLP([2*code_size, 32, code_size])
+
+    def forward(self, x):
+        pair_enc = self.re_net(x.view(-1, self.n_objects, self.code_size))
+        ind_enc = self.sd_net(x)
+        g_enc = self.aff_net(ind_enc + pair_enc)
+
+        h = torch.cat([x, g_enc], dim=1)
+        h = self.agg_net(h)
+
+        return h
+
+class StateCodeModel(nn.Module):
+    def __init__(self, n_frames, state_size, code_size, n_objects):
+        super(StateCodeModel, self).__init__()
+
+        self.state_size = state_size
+        self.code_size = code_size
+        self.n_frames = n_frames
+        # self.linear = nn.Linear(n_frames*state_size, code_size)
+        self.mlp = MLP([n_frames*state_size, code_size])
+
+    def forward(self, x):
+        # x = [self.linear(inp) for inp in x]
+        h = torch.cat(x, dim=1)
+        # h = self.linear(h)
+        h = self.mlp(h)
+
+        return h
+
+class PredictNet(nn.Module):
+    def __init__(self, n_objects, code_size, num_offsets, args):
+        super(PredictNet, self).__init__()
+
+        self.n_objects = n_objects
+        self.code_size = code_size
+        self.num_offsets = num_offsets
+
+        self.inets = nn.ModuleList([
+            InteractionNet(n_objects, code_size, args) for _ in range(num_offsets)])
+
+        self.agg = MLP([num_offsets * code_size, code_size, code_size])
+
+    def forward(self, inps):
+        preds = []
+        for inp, inet in zip(inps, self.inets):
+            preds.append(inet(inp))
+
+        h = torch.cat(preds, dim=1)
+        h = self.agg(h)
+
+        return h
+
