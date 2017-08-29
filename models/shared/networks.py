@@ -55,19 +55,36 @@ class RecurrentWrapper(BaseWrapper):
     Wraps a model that outputs an encoding at every time step after receiving the
     previous encoding.
     """
-    def __init__(self, step_model, args):
+    def __init__(self, step_model, args, enc0_structure=None):
         super(RecurrentWrapper, self).__init__()
         self.step_model = step_model
         self.use_cuda = args.cuda
         self.enc_width = args.enc_widths[-1]
-        self.enc0 = nn.Parameter(torch.Tensor(np.zeros((self.enc_width,))).cuda())
+        if enc0_structure is None:
+            self.enc0 = nn.Parameter(torch.Tensor(np.zeros((self.enc_width,))).cuda())
+        else:
+            def initialize_structure(enc0_structure):
+                li = [nn.Parameter(torch.Tensor(np.zeros((x,))).cuda())
+                      if type(x) is int else initialize_structure(x) 
+                      for x in enc0_structure]
+                return li
+            self.enc0 = nn.Parameter(torch.Tensor(np.zeros((self.enc_width,))).cuda()),\
+                initialize_structure(enc0_structure)
+
         self.rolling = args.rolling
 
     # sample_batch has shape (time_steps, batch_size, x_size)
     # only the last 2 layers are torch Tensors
     def forward(self, sample_batch):
         batch_size = sample_batch[0].size()[0] # get dynamic batch size
-        enc = self.enc0.repeat(batch_size, 1)
+        def batch_enc_structure(enc):
+            if type(enc) is list:
+                return [batch_enc_structure(x) for x in enc]
+            elif type(enc) is tuple:
+                return tuple(batch_enc_structure(x) for x in enc)
+            else:
+                return enc.repeat(batch_size, 1)
+        enc = batch_enc_structure(self.enc0)
         encs = []
         encs.append(enc)
 
@@ -76,7 +93,11 @@ class RecurrentWrapper(BaseWrapper):
                 sample = sample.cuda()
             sample = Variable(sample)
             enc = self.step_model(sample, enc)
-            encs.append(enc)
+            if type(enc) is tuple:
+                # For LSTM, first element of model output is output encoding
+                encs.append(enc[0])
+            else:
+                encs.append(enc)
 
         if self.rolling:
             return encs
@@ -185,7 +206,7 @@ class TransformNet(nn.Module):
 """ EncNets """
 
 class BasicEncNet(nn.Module):
-    def __init__(self, enc_size, sample_size, use_lstm=False):
+    def __init__(self, enc_size, sample_size):
         super(BasicEncNet, self).__init__()
         self.use_lstm = use_lstm
 
@@ -193,28 +214,39 @@ class BasicEncNet(nn.Module):
         enc_weights = [sample_size+enc_size] + enc_weights
         # inp_weights = [x_size+y_size] + [enc_size] * 4
 
-        if use_lstm:
-            self.lstm1 = nn.LSTMCell(sample_size, enc_size)
-            self.lstm2 = nn.LSTMCell(enc_size, enc_size)
-        else:
-            self.enc_linears = nn.ModuleList([
-                nn.Linear(inp, out) for inp, out in zip(enc_weights[:-1], enc_weights[1:])])
+        self.enc_linears = nn.ModuleList([
+            nn.Linear(inp, out) for inp, out in zip(enc_weights[:-1], enc_weights[1:])])
 
     def forward(self, sample, enc0):
         h = torch.cat((sample, enc0), dim=1)
-        if self.use_lstm: # currently not working
-            # h1, c1 = self.lstm1(xy, (h0, c0))
-            # h2, c2 = self.lstm2(h1, (h1, c1))
-            # return h2, c2
-            raise NotImplementedError
-        else:
-            for i, lin in enumerate(self.enc_linears):
-                if i == len(self.enc_linears) - 1: 
-                    h = lin(h)
-                else:
-                    h = F.relu(lin(h))
+        for i, lin in enumerate(self.enc_linears):
+            if i == len(self.enc_linears) - 1: 
+                h = lin(h)
+            else:
+                h = F.relu(lin(h))
 
-            return h
+        return h
+
+class LSTMEncNet(nn.Module):
+    def __init__(self, enc_size, sample_size, depth=1):
+        super(LSTMEncNet, self).__init__()
+
+        assert depth >= 1
+        lstms = []
+        lstms += [nn.LSTMCell(sample_size, enc_size)]
+        for _ in xrange(depth - 1):
+            lstms += [nn.LSTMCell(enc_size, enc_size)]
+        self.lstms = nn.ModuleList(lstms)
+
+    def forward(self, sample, enc0):
+        _, states = enc0
+        h = sample
+        new_states = []
+        for i in xrange(len(self.lstms)):
+            prev_h, prev_c = states[i]
+            h, c = self.lstms[i](h, (prev_h, prev_c))
+            new_states.append((h,c))
+        return h, new_states
 
 class ParallelEncNet(nn.Module):
     def __init__(self, widths, sample_size):

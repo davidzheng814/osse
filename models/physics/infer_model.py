@@ -28,6 +28,7 @@ import shared.networks as networks
 """ CONFIG """
 
 DATAROOT = '/data/vision/oliva/scenedataset/urops/scenelayout/.physics_n3/'
+DATAROOT = '/data/vision/oliva/scenedataset/urops/scenelayout/.physics_b_n3_t75_f120_clean/'
 ROOT = '../..'
 parser = argparse.ArgumentParser(description='Physics mass inference model.')
 parser.add_argument('--seed', type=int, default=1, metavar='S',
@@ -56,7 +57,6 @@ parser.add_argument('--weight-ind', type=int, default=-1,
                     help='If set, print weight matrix of test set at ind')
 parser.add_argument('--num-workers', type=int, default=4,
                     help='Num workers to load data')
-parser.add_argument('--use-lstm', action="store_true", help='Use LSTM for Enc Model')
 parser.add_argument('--use-prior', action="store_true", help='Use prior')
 parser.add_argument('--progbar', action="store_true", help='Display progbar')
 parser.add_argument('--no-cuda', action='store_true', default=False,
@@ -75,6 +75,10 @@ parser.add_argument('--num-sequential-frames', type=int, default=4,
                     help='Number of sequential frames to use for training')
 parser.add_argument('--mem-cache', action='store_true', default=False,
                     help='caches all loaded files in memory')
+parser.add_argument('--model', type=str, default='parallel',
+                    help='model to use for encnet (parallel/lstm)')
+parser.add_argument('--depth', type=int, default=1,
+                    help='default depth for certain classes of models')
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -196,8 +200,17 @@ if args.mem_cache:
 x_size = train_set.x_size
 y_size = train_set.y_size
 
-enc_model = networks.ParallelEncNet(args.enc_widths, x_size)
-enc_model_wrapper = networks.get_wrapper('confweight', enc_model, args)
+if args.model == 'parallel':
+    enc_model = networks.ParallelEncNet(args.enc_widths, x_size)
+    enc_model_wrapper = networks.get_wrapper('confweight', enc_model, args)
+elif args.model == 'lstm':
+    assert len(args.enc_widths) == 1
+    enc0_structure = [(args.enc_widths[-1], args.enc_widths[-1])] * args.depth
+    enc_model = networks.LSTMEncNet(args.enc_widths[-1], x_size, depth=args.depth)
+    enc_model_wrapper = networks.RecurrentWrapper(enc_model, args, enc0_structure)
+else:
+    raise RuntimeError("Model type {} not recognized.".format(args.model))
+
 trans_model = networks.TransformNet(args.enc_widths[-1], args.trans_widths,  y_size)
 if args.cuda:
     enc_model.cuda()
@@ -208,6 +221,9 @@ trans_optim = optim.Adam(trans_model.parameters(), lr=args.lr_trans)
 
 mse = nn.MSELoss()
 l1 = nn.L1Loss()
+
+print "Enc net params:", networks.num_params(enc_model_wrapper)
+print "Trans net params:", networks.num_params(trans_model)
 
 """ HELPERS """
 
