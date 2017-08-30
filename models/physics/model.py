@@ -1,3 +1,8 @@
+from __future__ import print_function
+
+import sys
+sys.path.append('..')
+
 from os.path import join
 import os
 import argparse
@@ -6,7 +11,9 @@ import time
 import math
 import random
 import json
+import datetime
 
+import git
 import numpy as np
 import torch
 import torch.nn as nn
@@ -14,6 +21,9 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torch.utils.data
 from torch.autograd import Variable
+
+from loader import PhysicsDataset, get_loader_or_cache
+import shared.networks as networks
 
 # TODO Use more correct discounting (more in line with paper's discount factors and increments?).
 # TODO Add supervision signal on top of rollout. 
@@ -37,13 +47,15 @@ parser.add_argument('--alpha', type=float, default=6e5,
                     help='pred model learning rate alpha decay')
 parser.add_argument('--epochs', type=int, default=300,
                     help='number of epochs')
-parser.add_argument('--data-dir', type=str, default=join(DATAROOT, '.physics_n3_t60_f120'),
+parser.add_argument('--data-dir', type=str, default=join(DATAROOT, '.physics_b_n3_t75_f120_clean/'),
                     help='path to training data')
-parser.add_argument('--log', type=str, default='log.txt',
+parser.add_argument('--log', action="store_true",
                     help='Store logs.')
-parser.add_argument('--batch-size', type=int, default=5,
+parser.add_argument('--log-dir', type=str, default='logs/',
+                    help='Log directory.')
+parser.add_argument('--batch-size', type=int, default=1000,
                     help='batch size')
-parser.add_argument('--max-files', type=int, default=-1,
+parser.add_argument('--num-files', type=int, default=-1,
                     help='max files to load. (-1 for no max)')
 parser.add_argument('--test-files', type=int, default=50,
                     help='num files to test.')
@@ -57,12 +69,14 @@ parser.add_argument('--code-size', type=int, default=64,
                     help='Size of code.')
 parser.add_argument('--offsets', type=int, default=[1, 2, 4],
                     nargs='+', help='The timestep offset values.')
+parser.add_argument('--num-encode', type=int, default=50,
+                    help='Number of timesteps to use to encode.')
+parser.add_argument('--n-enc-frames', type=int, default=4,
+                    help='Number of frames to combine during prediction at each time step.')
+parser.add_argument('--enc-widths', type=int, default=[20, 20, 6],
+                    nargs='+', help='The timestep offset values.')
 parser.add_argument('--n-frames', type=int, default=2,
-                    help='Number of frames to combine before prediction.')
-parser.add_argument('--rollout-ind', type=int,
-                    help="First predicted sample used as input in prediction of the next.")
-parser.add_argument('--earliest-rollout', action="store_true",
-                    help="Set rollout index to earliest rollout")
+                    help='Number of frames to combine during prediction at each time step.')
 parser.add_argument('--discount', action="store_true",
                     help="Whether to discount future rollout states at first.")
 parser.add_argument('---beta', type=float, default=1.5e5,
@@ -73,6 +87,8 @@ parser.add_argument('--predict-ind', type=int, default=0,
                     help="First sample used as prediction.")
 parser.add_argument('--max-samples', type=int,
                     help='max samples per group.')
+parser.add_argument('--rolling', action='store_true', help='Are encodings rolling?')
+parser.add_argument('--use-prior', action='store_true', help='Use a trainable prior for encoding?')
 parser.add_argument('--anneal', action='store_true', help='Set learning rate annealing.')
 parser.add_argument('--supervise', action='store_true', help='Set whether to use non-rollout supervision signal.')
 parser.add_argument('--load-model', action='store_true', help='Whether to load model from checkpoint.')
@@ -80,6 +96,16 @@ parser.add_argument('--save-epochs', type=int, help='Save after every x epochs.'
 parser.add_argument('--predict', type=str, help='Predict file.')
 parser.add_argument('--checkpoint-dir', type=str, default='checkpoint/',
                     help='Checkpoint Dir.')
+parser.add_argument('--no-cache', action='store_true', default=False,
+                    help='caches all loaded files in memory')
+parser.add_argument('--settings', type=str,
+                    help='Use a settings file.')
+
+if '--settings' in sys.argv:
+    settings_file = sys.argv[sys.argv.index('--settings')+1]
+    with open(settings_file) as f:
+        tokens = f.read().split()
+    sys.argv = sys.argv[:1] + tokens + sys.argv[1:]
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -90,206 +116,42 @@ if args.cuda:
     torch.cuda.manual_seed(args.seed)
     num_devices = len(os.environ['CUDA_VISIBLE_DEVICES'].split(','))
 
-""" DATA LOADERS """
-
 MAX_MASS = 12.
-class PhysicsDataset(torch.utils.data.Dataset):
-    def __init__(self, train=True):
-        super(PhysicsDataset, self).__init__()
-        self.files = glob.glob(args.data_dir + '/*.npz')
-
-        if args.max_files > 0:
-            self.files = self.files[:args.max_files]
-
-        assert len(self.files) > args.test_files
-
-        self.train = train
-        if train:
-            self.files = self.files[:-args.test_files]
-        else:
-            self.files = self.files[-args.test_files:]
-
-        with np.load(self.files[0]) as data:
-            self.n_objects = data['x'].shape[1] 
-            self.state_size = data['x'].shape[2] + 1 # Add 1 for mass
-
-    @staticmethod
-    def to_list(x, masses):
-        # TODO Hardcoding max mass.
-        masses = np.tile(masses / MAX_MASS, (x.shape[0], 1))
-        masses = np.reshape(masses, (x.shape[0], -1, 1))
-        x = np.concatenate([x, masses], axis=2)
-        x = list(x.astype(np.float32))
-        return x
-
-    def __len__(self):
-        return len(self.files)
-
-    def __getitem__(self, key):
-        with np.load(self.files[key]) as data:
-            x = PhysicsDataset.to_list(data['x'], data['y'])
-
-        if args.max_samples:
-            if self.train:
-                rand_ind = random.randint(0, len(x)-args.max_samples)
-                x = x[rand_ind:rand_ind+args.max_samples]
-            else:
-                rand_ind = random.randint(0, len(x)-args.max_samples)
-                x = x[rand_ind:rand_ind+args.max_samples]
-
-        return x
-
-
-class MLP(nn.Module):
-    def __init__(self, widths, reshape=False, tanh=False, relu=True, n_objects=None):
-        """ Only set n_objects if reshape = True"""
-        super(MLP, self).__init__()
-
-        self.reshape = reshape
-        self.relu = relu
-        self.tanh = tanh
-        self.n_objects = n_objects
-        self.widths = widths
-        self.linears = nn.ModuleList([
-            nn.Linear(inp, out) for inp, out in zip(widths[:-1], widths[1:])])
-
-    def forward(self, x):
-        if self.reshape:
-            h = x.view(-1, self.widths[0])
-        else:
-            h = x
-
-        for i, lin in enumerate(self.linears):
-            h = lin(h)
-            if i != len(self.linears) - 1:
-                if self.relu:
-                    h = F.relu(h)
-                elif self.tanh:
-                    h = F.tanh(h)
-
-        if self.reshape:
-            h = h.view(-1, self.n_objects, self.widths[-1])
-
-        return h
-
-class RelationNet(nn.Module):
-    def __init__(self, n_objects, code_size):
-        """Cross product concatenation. 
-        Takes in code [batch_size, n_objects, code_size].
-        Returns code [batch_size, n_objects, code_size].
-        """
-        super(RelationNet, self).__init__()
-
-        self.n_objects = n_objects
-        self.code_size = code_size
-        self.inp_size = 2 * code_size
-        self.MLP = MLP([self.inp_size, code_size, code_size, code_size])
-
-        index = []
-        inds = range(n_objects)
-        for i in range(1, n_objects):
-            inds = inds[-1:] + inds[:-1]
-            index.extend(inds)
-
-        if args.cuda:
-            self.index = Variable(torch.cuda.LongTensor(index))
-        else:
-            self.index = Variable(torch.LongTensor(index))
-
-    def forward(self, x):
-        base = x.repeat(1, self.n_objects-1, 1)
-        scrambled = torch.index_select(base, 1, self.index)
-
-        h = torch.cat([base, scrambled], dim=2)
-        h = h.view(-1, self.inp_size)
-        h = self.MLP(h)
-        h = h.view(-1, self.n_objects-1, self.n_objects, self.code_size)
-        h = torch.sum(h, 1).view(-1, self.code_size)
-
-        return h
-
-class InteractionNet(nn.Module):
-    def __init__(self, n_objects, code_size):
-        super(InteractionNet, self).__init__()
-
-        self.n_objects = n_objects
-        self.code_size = code_size
-
-        self.re_net = RelationNet(n_objects, code_size)
-        self.sd_net = MLP([code_size, code_size, code_size])
-        self.aff_net = MLP([code_size, code_size, code_size, code_size])
-        self.agg_net = MLP([2*code_size, 32, code_size])
-
-    def forward(self, x):
-        pair_enc = self.re_net(x.view(-1, self.n_objects, self.code_size))
-        ind_enc = self.sd_net(x)
-        g_enc = self.aff_net(ind_enc + pair_enc)
-
-        h = torch.cat([x, g_enc], dim=1)
-        h = self.agg_net(h)
-
-        return h
-
-class StateCodeModel(nn.Module):
-    def __init__(self, n_frames, state_size, code_size, n_objects):
-        super(StateCodeModel, self).__init__()
-
-        self.state_size = state_size
-        self.code_size = code_size
-        self.n_frames = n_frames
-        # self.linear = nn.Linear(n_frames*state_size, code_size)
-        self.mlp = MLP([n_frames*state_size, code_size])
-
-    def forward(self, x):
-        # x = [self.linear(inp) for inp in x]
-        h = torch.cat(x, dim=1)
-        # h = self.linear(h)
-        h = self.mlp(h)
-
-        return h
-
-class PredictNet(nn.Module):
-    def __init__(self, n_objects, code_size, num_offsets):
-        super(PredictNet, self).__init__()
-
-        self.n_objects = n_objects
-        self.code_size = code_size
-        self.num_offsets = num_offsets
-
-        self.inets = nn.ModuleList([
-            InteractionNet(n_objects, code_size) for _ in range(num_offsets)])
-
-        self.agg = MLP([num_offsets * code_size, code_size, code_size])
-
-    def forward(self, inps):
-        preds = []
-        for inp, inet in zip(inps, self.inets):
-            preds.append(inet(inp))
-
-        h = torch.cat(preds, dim=1)
-        h = self.agg(h)
-
-        return h
-
 kwargs = {'num_workers': args.num_workers, 'pin_memory': True} if args.cuda else {'num_workers': 4}
 
-train_set = PhysicsDataset(train=True)
+train_set = PhysicsDataset(args.data_dir, args.num_files, args.test_files, train=True)
 train_loader = torch.utils.data.DataLoader(train_set,
     batch_size=args.batch_size, shuffle=True, **kwargs)
-test_set = PhysicsDataset(train=False)
+test_set = PhysicsDataset(args.data_dir, args.num_files, args.test_files, train=False)
 test_loader = torch.utils.data.DataLoader(test_set,
     batch_size=args.batch_size, shuffle=False, **kwargs)
 
+# In memory caching
+train_cache = None
+test_cache = None
+if args.no_cache:
+    train_cache = []
+    test_cache = []
+
 n_offsets = len(args.offsets)
 n_objects = train_set.n_objects
+assert args.enc_widths[-1] % n_objects == 0
+enc_size = args.enc_widths[-1] / n_objects
+assert args.code_size > enc_size
+
 state_size = train_set.state_size
-pred_model = PredictNet(n_objects, args.code_size, n_offsets)
+pred_model = networks.PredictNet(n_objects, args.code_size, n_offsets, args)
 if args.cuda and num_devices > 1:
     pred_model = nn.DataParallel(pred_model, device_ids=range(num_devices))
-state_to_code_model = StateCodeModel(args.n_frames, state_size, args.code_size, n_objects)
-code_to_state_model = MLP([args.code_size, args.n_frames*state_size])
+state_to_code_model = networks.StateCodeModel(args.n_frames, state_size+enc_size, args.code_size, n_objects)
+code_to_state_model = networks.MLP([args.code_size, args.n_frames*state_size])
+
+enc_net = networks.ParallelEncNet(args.enc_widths, n_objects*state_size*args.n_enc_frames, args) 
+enc_model = networks.ConfidenceWeightWrapper(enc_net, args)
 
 if args.cuda:
+    enc_net.cuda()
+    enc_model.cuda()
     pred_model.cuda()
     state_to_code_model.cuda()
     code_to_state_model.cuda()
@@ -315,18 +177,15 @@ def zero_variable_(size, volatile=False):
     else:
         return Variable(torch.FloatTensor(*size).zero_(), volatile=volatile)
 
-def log(text):
-    text = str(text)
-    print text
-    with open(args.log, 'a') as f:
-        f.write(text + '\n')
+def log(*tokens):
+    print(*tokens)
+    text = " ".join([str(x) for x in tokens])
+    if args.log:
+        with open(log_file, 'a') as f:
+            f.write(text + "\n")
 
 def get_loss(pred, true, is_l1=False, discount=1.):
     # TODO this is a hack that presumes n_frames=2
-    pred = torch.cat([pred[:,:state_size-1],
-                      pred[:,state_size:2*state_size-1]], dim=1)
-    true = torch.cat([true[:,:state_size-1],
-                      true[:,state_size:2*state_size-1]], dim=1)
     if is_l1:
         return discount * l1(pred, true)
     else:
@@ -358,8 +217,8 @@ def get_json_state(state):
         for obj in sample:
             obj = obj.tolist()
             # TODO Hardcoded numbers. 
-            pos.append({'x':obj[5], 'y':obj[6]})
-            vel.append({'x':obj[7], 'y':obj[8]})
+            pos.append({'x':obj[4], 'y':obj[5]})
+            vel.append({'x':obj[6], 'y':obj[7]})
 
         payload.append({'pos':pos, 'vel':vel})
 
@@ -373,20 +232,38 @@ def process_batch(x, train, discount=None, non_ro_weight=0., out_dir=None):
     if args.cuda:
         x = [samp.cuda() for samp in x]
     x = [Variable(samp, volatile=not train) for samp in x]
-    x = [samp.view(-1, state_size) for samp in x]
+
+    num_prep_frames = max(args.offsets)+args.n_frames-1
+    enc_x, pred_x = x[:args.num_encode], x[args.num_encode - num_prep_frames:]
 
     mse_loss = zero_variable_((1,), volatile=not train)
     if not train:
         l1_loss = zero_variable_((1,), volatile=not train)
         base_l1_loss = zero_variable_((1,), volatile=not train)
 
+    """Encoding step."""
+    start_time = time.time()
+    enc_x = [samp.view(args.batch_size, -1) for samp in enc_x]
+
+    inps = []
+    for start_ind in range(0, len(enc_x)-args.n_enc_frames+1):
+        inp = enc_x[start_ind:start_ind+args.n_enc_frames]
+        inp = torch.cat(inp, dim=1)
+        inps.append(inp)
+    enc = enc_model(inps)
+    enc = enc.view(args.batch_size * n_objects, enc_size)
+
+    """Prediction rollout step."""
+    pred_x_wo_enc = [samp.view(-1, state_size) for samp in pred_x]
+    pred_x = [torch.cat([samp, enc], dim=1) for samp in pred_x_wo_enc]
+
     aux_loss = 0
     # Add auxiliary losses
     codes = [None for _ in range(args.n_frames-1)]
-    for start_ind in range(len(x)-args.n_frames+1):
-        inp = x[start_ind:start_ind+args.n_frames]
-        out = torch.cat(inp, dim=1)
-        code = state_to_code_model(inp)
+    for start_ind in range(len(pred_x)-args.n_frames+1):
+        inp = pred_x[start_ind:start_ind+args.n_frames]
+        out = torch.cat(pred_x_wo_enc[start_ind:start_ind+args.n_frames], dim=1)
+        code = state_to_code_model(inp) # TODO should we just cat inp before passing in?
         state = code_to_state_model(code)
 
         aux_loss_ = get_loss(state, out)
@@ -401,9 +278,9 @@ def process_batch(x, train, discount=None, non_ro_weight=0., out_dir=None):
     num_preds = 0
     cur_discount = 1.
     preds, ro_preds, true_states = [], [], []
-    for i in range(max(args.offsets)+args.n_frames-1, len(codes)):
+    for i in range(num_prep_frames, len(codes)):
         # i equals current frame index to predict.
-        true_state = torch.cat(x[i-1:i+1], dim=1)
+        true_state = torch.cat(pred_x_wo_enc[i-1:i+1], dim=1)
         inps = [codes[i-offset] for offset in args.offsets]
         ro_inps = [ro_codes[i-offset] for offset in args.offsets]
         pred_code = pred_model(inps)
@@ -414,32 +291,28 @@ def process_batch(x, train, discount=None, non_ro_weight=0., out_dir=None):
         ro_preds.append(ro_pred)
         true_states.append(true_state)
 
-        is_rollout = args.earliest_rollout or (args.rollout_ind and i >= args.rollout_ind)
-        if is_rollout:
-            ro_codes[i] = ro_pred_code
-            mse_loss += get_loss(ro_pred, true_state, discount=cur_discount)
-            mse_loss += non_ro_weight * get_loss(pred, true_state)
-        else:
-            mse_loss += get_loss(pred, true_state)
+        ro_codes[i] = ro_pred_code
+        mse_loss += get_loss(ro_pred, true_state, discount=cur_discount)
+        mse_loss += non_ro_weight * get_loss(pred, true_state)
 
         if not train:
             l1_loss += get_loss(ro_pred, true_state, is_l1=True)
             # TODO Hardcoded n-frames = 2
-            base_pred = torch.cat([x[i-1], x[i-1]], dim=1)
+            base_pred = torch.cat([pred_x_wo_enc[i-1], pred_x_wo_enc[i-1]], dim=1)
             base_l1_loss += get_loss(base_pred, true_state, is_l1=True)
         num_preds += 1
 
-        if is_rollout and discount:
+        if discount:
             cur_discount *= discount
 
-    # Write predictions to json file. 
+    """Save specific examples."""
     if out_dir:
-        preds, true_states = [[x.data.numpy().reshape(-1, n_objects, args.n_frames*state_size)
-                               for x in states] for states in (preds, true_states)]
+        preds, true_states = [[a.data.numpy().reshape(-1, n_objects, args.n_frames*state_size)
+                               for a in states] for states in (preds, true_states)]
         for i in range(len(preds[0])): # Iterate through each group in batch.
-            pred = [x[i] for x in preds]
-            true_state = [x[i] for x in true_states]
-            print("Masses:", true_state[0][:,9] * MAX_MASS)
+            pred = [a[i] for a in preds]
+            true_state = [a[i] for a in true_states]
+            log("Masses:", true_state[0][:,9] * MAX_MASS)
             with open(join(out_dir, 'data_'+str(i)+'.json'), 'w') as f:
                 payload = {
                     'states': get_json_state(pred),
@@ -470,7 +343,9 @@ def train_epoch(epoch):
 
     mse_loss, aux_loss, num_batches = 0, 0, 0
     start_time = time.time()
-    for batch_idx, x in enumerate(train_loader):
+
+    loader = get_loader_or_cache(train_loader, train_cache)
+    for batch_idx, x in enumerate(loader):
         mse_loss_, aux_loss_ = process_batch(x, train=True, discount=discount, non_ro_weight=non_ro_weight)
         mse_loss += mse_loss_
         aux_loss += aux_loss_
@@ -482,6 +357,8 @@ def train_epoch(epoch):
 def test_epoch(epoch):
     mse_loss, aux_loss, l1_loss, base_l1_loss, num_batches, num_preds = 0, 0, 0, 0, 0, 0
     start_time = time.time()
+
+    loader = get_loader_or_cache(test_loader, test_cache)
     for batch_idx, x in enumerate(test_loader):
         mse_loss_, aux_loss_, l1_loss_, base_l1_loss_, num_preds_ = process_batch(x, train=False)
         num_preds += num_preds_
@@ -499,6 +376,14 @@ def predict():
     process_batch(batch, train=False, out_dir=args.predict)
 
 if __name__ == '__main__':
+    if args.log:
+        log_file = join(args.log_dir, datetime.datetime.now().strftime('%Y%m%d_%H%M%S.txt'))
+        repo = git.Repo(search_parent_directories=True)
+        log("Commit Hash:", repo.head.object.hexsha)
+        raw_input('Did you commit all changes? (Press Enter to continue)')
+
+    log("Flags:", " ".join(sys.argv))
+
     if args.load_model:
         log("Load Model")
         load_model()
