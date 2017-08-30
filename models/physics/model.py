@@ -47,17 +47,17 @@ parser.add_argument('--alpha', type=float, default=6e5,
                     help='pred model learning rate alpha decay')
 parser.add_argument('--epochs', type=int, default=300,
                     help='number of epochs')
-parser.add_argument('--data-dir', type=str, default=join(DATAROOT, '.physics_b_n3_t75_f120_clean/'),
+parser.add_argument('--data-file', type=str, default=join(DATAROOT, '.physics_b_n3_t75_f120_clean.h5'),
                     help='path to training data')
 parser.add_argument('--log', action="store_true",
                     help='Store logs.')
 parser.add_argument('--log-dir', type=str, default='logs/',
                     help='Log directory.')
-parser.add_argument('--batch-size', type=int, default=1000,
+parser.add_argument('--batch-size', type=int, default=2000,
                     help='batch size')
-parser.add_argument('--num-files', type=int, default=-1,
-                    help='max files to load. (-1 for no max)')
-parser.add_argument('--test-files', type=int, default=50,
+parser.add_argument('--num-points', type=int, default=-1,
+                    help='max points to use. (-1 for no max)')
+parser.add_argument('--test-points', type=int, default=1000,
                     help='num files to test.')
 parser.add_argument('--num-workers', type=int, default=16,
                     help='Num workers to load data')
@@ -94,8 +94,6 @@ parser.add_argument('--save-epochs', type=int, help='Save after every x epochs.'
 parser.add_argument('--predict', type=str, help='Predict file.')
 parser.add_argument('--checkpoint-dir', type=str, default='checkpoint/',
                     help='Checkpoint Dir.')
-parser.add_argument('--no-cache', action='store_true', default=False,
-                    help='caches all loaded files in memory')
 parser.add_argument('--settings', type=str,
                     help='Use a settings file.')
 
@@ -117,19 +115,12 @@ if args.cuda:
 MAX_MASS = 12.
 kwargs = {'num_workers': args.num_workers, 'pin_memory': True} if args.cuda else {'num_workers': 4}
 
-train_set = PhysicsDataset(args.data_dir, args.num_files, args.test_files, train=True)
+train_set = PhysicsDataset(args.data_file, args.num_points, args.test_points, train=True)
 train_loader = torch.utils.data.DataLoader(train_set,
     batch_size=args.batch_size, shuffle=True, **kwargs)
-test_set = PhysicsDataset(args.data_dir, args.num_files, args.test_files, train=False)
+test_set = PhysicsDataset(args.data_file, args.num_points, args.test_points, train=False)
 test_loader = torch.utils.data.DataLoader(test_set,
     batch_size=args.batch_size, shuffle=False, **kwargs)
-
-# In memory caching
-train_cache = None
-test_cache = None
-if not args.no_cache:
-    train_cache = []
-    test_cache = []
 
 n_offsets = len(args.offsets)
 n_objects = train_set.n_objects
@@ -342,12 +333,13 @@ def train_epoch(epoch):
     mse_loss, aux_loss, num_batches = 0, 0, 0
     start_time = time.time()
 
-    loader = get_loader_or_cache(train_loader, train_cache)
-    for batch_idx, x in enumerate(loader):
+    for batch_idx, x in enumerate(train_loader):
+        print("A", time.time() - start_time)
         mse_loss_, aux_loss_ = process_batch(x, train=True, discount=discount, non_ro_weight=non_ro_weight)
         mse_loss += mse_loss_
         aux_loss += aux_loss_
         num_batches += 1
+        start_time = time.time()
 
     log('Time: {:.2f}s Epoch: {} Train Loss ({}): {:.5f} Aux {:.5f}'.format(
         time.time() - start_time, epoch, args.loss_fn.upper(), mse_loss / num_batches, aux_loss / num_batches))
@@ -356,7 +348,6 @@ def test_epoch(epoch):
     mse_loss, aux_loss, l1_loss, base_l1_loss, num_batches, num_preds = 0, 0, 0, 0, 0, 0
     start_time = time.time()
 
-    loader = get_loader_or_cache(test_loader, test_cache)
     for batch_idx, x in enumerate(test_loader):
         mse_loss_, aux_loss_, l1_loss_, base_l1_loss_, num_preds_ = process_batch(x, train=False)
         num_preds += num_preds_
