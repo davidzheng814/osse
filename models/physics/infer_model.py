@@ -204,7 +204,7 @@ x_size = train_set.x_size
 y_size = train_set.y_size
 
 if args.model == 'parallel':
-    enc_model = networks.ParallelEncNet(args.enc_widths, x_size)
+    enc_model = networks.ParallelEncNet(args.enc_widths, x_size, args)
     enc_model_wrapper = networks.get_wrapper('confweight', enc_model, args)
 elif args.model == 'lstm':
     assert len(args.enc_widths) == 1
