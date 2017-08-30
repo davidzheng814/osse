@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import h5py
 
 import random
 import glob
@@ -31,31 +32,30 @@ class CachedDataLoader:
         return result
 
 class PhysicsDataset(torch.utils.data.Dataset):
-    def __init__(self, data_dir, num_files, num_test_files, train=True):
+    def __init__(self, data_file, num_points, num_test_points, train=True):
         super(PhysicsDataset, self).__init__()
-        self.files = glob.glob(data_dir + '/*.npz')
 
-        if num_files > 0:
-            self.files = self.files[:num_files]
+        assert (num_points >= num_test_points) or (num_points < 0)
 
-        assert len(self.files) > num_test_files
+        f = h5py.File(data_file, 'r')
 
-        self.train = train
+        num_points = num_points if num_points >= 0 else f['x'].shape[0]
+
         if train:
-            self.files = self.files[:-num_test_files]
+            self.x = f['x'][:num_points - num_test_points]
+            self.y = f['y'][:num_points - num_test_points]
         else:
-            self.files = self.files[-num_test_files:]
+            self.x = f['x'][num_points - num_test_points:num_points]
+            self.y = f['y'][num_points - num_test_points:num_points]
 
-        with np.load(self.files[0]) as data:
-            self.n_objects = data['x'].shape[1]
-            self.state_size = data['x'].shape[2]
+        self.n_objects = self.x.shape[2]
+        self.state_size = self.x.shape[3]
 
     def __len__(self):
-        return len(self.files)
+        return len(self.x)
 
     def __getitem__(self, key):
-        with np.load(self.files[key]) as data:
-            x = list(data['x'].astype(np.float32))
+        x = list(self.x[key].astype(np.float32))
 
         return x
 
