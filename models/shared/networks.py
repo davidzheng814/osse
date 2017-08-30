@@ -91,7 +91,8 @@ class RecurrentWrapper(BaseWrapper):
         for i, sample in enumerate(sample_batch[:-1]):
             if self.use_cuda:
                 sample = sample.cuda()
-            sample = Variable(sample)
+            if not isinstance(sample, Variable):
+                sample = Variable(sample)
             enc = self.step_model(sample, enc)
             if type(enc) is tuple:
                 # For LSTM, first element of model output is output encoding
@@ -137,6 +138,8 @@ class ConfidenceWeightWrapper(BaseWrapper):
         for i, sample in enumerate(sample_batch[:-1]):
             if self.use_cuda:
                 sample = sample.cuda()
+            if not isinstance(sample, Variable):
+                sample = Variable(sample)
             local_enc, conf = self.step_model(sample)
             w_encs[i+1] = local_enc * conf
             confs[i+1] = conf
