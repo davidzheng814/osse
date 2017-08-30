@@ -49,9 +49,9 @@ parser.add_argument('--max-files', type=int, default=-1,
                     help='max files to load. (-1 for no max)')
 parser.add_argument('--test-files', type=int, default=50,
                     help='num files to test.')
-parser.add_argument('--start-train-ind', type=int, default=20,
+parser.add_argument('--start-train-ind', type=int, default=50,
                     help='index of each group element to start backproping.')
-parser.add_argument('--start-test-ind', type=int, default=20,
+parser.add_argument('--start-test-ind', type=int, default=50,
                     help='index of each group element to start testing.')
 parser.add_argument('--weight-ind', type=int, default=-1,
                     help='If set, print weight matrix of test set at ind')
@@ -63,8 +63,8 @@ parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='disables CUDA training')
 parser.add_argument('--no-prior', action='store_true', default=False,
                     help='disables use of prior')
-parser.add_argument('--rolling', action='store_true', default=False,
-                    help='trains the model on rolling updates of the encoding')
+#parser.add_argument('--rolling', action='store_true', default=False,
+#                    help='trains the model on rolling updates of the encoding')
 parser.add_argument('--loss-fn', type=str, default='mse',
                     help='path to training data')
 parser.add_argument('--widths', type=int, default=[50, 50],
@@ -113,6 +113,8 @@ def collate(batch):
 
     return x, y
 
+# Currently sets the ratio of masses to the first mass as the y variable
+# Also logs the ratio
 class PhysicsDataset(torch.utils.data.Dataset):
     def __init__(self, train=True):
         super(PhysicsDataset, self).__init__()
@@ -130,7 +132,7 @@ class PhysicsDataset(torch.utils.data.Dataset):
 
         with np.load(self.files[0]) as data:
             self.x_size = data['x'].shape[1] * data['x'].shape[2] * args.num_sequential_frames
-            self.y_size = data['y'].shape[0]
+            self.y_size = data['y'].shape[0] - 1
 
     @staticmethod
     def to_list(x):
@@ -146,7 +148,8 @@ class PhysicsDataset(torch.utils.data.Dataset):
             for i in xrange(len(data['x']) - args.num_sequential_frames):
                 x.append(data['x'][i:i+args.num_sequential_frames])
             x = PhysicsDataset.to_list(x)
-            y = data['y']
+            y = np.array(data['y'])
+            y = list(np.log(y[1:] / y[0]))
 
         return x, y
 
@@ -238,6 +241,19 @@ def zero_variable_(size, volatile=False):
     else:
         return Variable(torch.FloatTensor(*size).zero_(), volatile=volatile)
 
+# Prints tensor/variable as list
+def d(t):
+    if isinstance(t, torch.Tensor) or isinstance(t, torch.cuda.FloatTensor):
+        return d(t.cpu().numpy())
+    elif isinstance(t, Variable):
+        return d(t.data)
+    elif isinstance(t, np.ndarray):
+        if len(t) == 1:
+            return d(t[0])
+        return list(t)
+    else:
+        raise RuntimeError("Unrecognized type {}".format(type(t)))
+
 """ TRAIN/TEST LOOPS """
 
 def train_epoch(epoch):
@@ -246,6 +262,8 @@ def train_epoch(epoch):
     start_time = time.time()
     compute_time = 0.
     loader = get_loader_or_cache(train_loader, train_cache)
+    tf_encs = []
+    ys = []
     for batch_idx, (x, y) in enumerate(progbar(loader)):
         enc_optim.zero_grad()
         trans_optim.zero_grad()
@@ -257,17 +275,29 @@ def train_epoch(epoch):
         start_compute = time.time()
         encs = enc_model_wrapper(x)
         batch_loss = 0
-        for enc in encs[args.start_train_ind:]:
-            tf_enc = trans_model(enc)
-            loss = mse(tf_enc, y)
-            tot_loss += loss.data[0]
-            num_batches += 1
+
+        # Encoding at step args.start_train_ind
+        enc = encs[args.start_train_ind]
+        tf_enc = trans_model(enc)
+        loss = mse(tf_enc, y)
+        tot_loss += loss.data[0]
+        tf_encs.append(tf_enc)
+        ys.append(y)
+        num_batches += 1
 
         loss.backward()
         enc_optim.step()
         trans_optim.step()
 
         compute_time += time.time() - start_compute
+
+    tf_encs = torch.cat(tf_encs, dim=0)
+    ys = torch.cat(ys, dim=0)
+
+    print("Pred mean/std/min/max:", d(torch.mean(tf_encs, 0)), d(torch.std(tf_encs, 0)),
+            d(torch.min(tf_encs, 0)[0]), d(torch.max(tf_encs, 0)[0]))
+    print(" Act mean/std/min/max:", d(torch.mean(ys, 0)), d(torch.std(ys, 0)),
+            d(torch.min(ys, 0)[0]), d(torch.max(ys, 0)[0]))
 
     log('Epoch: {}, Train Loss ({}): {:.3f}, Time: {:.2f}s, Compute: {:.2f}s'.format(
         epoch, args.loss_fn.upper(), tot_loss / num_batches, time.time() - start_time, 
@@ -279,21 +309,37 @@ def test_epoch(epoch):
     num_batches = 0
     start_time = time.time()
     loader = get_loader_or_cache(test_loader, test_cache)
+    tf_encs = []
+    ys = []
     for batch_idx, (x, y) in enumerate(progbar(loader)):
         if args.cuda:
             y = y.cuda()
         y = Variable(y)
 
         encs = enc_model_wrapper(x)
-        for enc in encs[args.start_train_ind:]:
-            tf_enc = trans_model(enc)
-            loss = mse(tf_enc, y)
-            l1_loss += l1(tf_enc, y).data[0]
-            mse_loss += mse(tf_enc, y).data[0]
-            num_batches += 1
 
-    log('Epoch: {}, Test Loss (L1): {:.3f}, (MSE): {:.3f}'.format(epoch,
-        l1_loss / num_batches, mse_loss / num_batches))
+        # Encoding at step args.start_train_ind
+        enc = encs[args.start_train_ind]
+        tf_enc = trans_model(enc)
+        loss = mse(tf_enc, y)
+        l1_loss += l1(tf_enc, y).data[0]
+        mse_loss += mse(tf_enc, y).data[0]
+        tf_encs.append(tf_enc)
+        ys.append(y)
+        num_batches += 1
+
+    tf_encs = torch.cat(tf_encs, dim=0)
+    ys = torch.cat(ys, dim=0)
+
+    print("Pred mean/std/min/max:", d(torch.mean(tf_encs, 0)), d(torch.std(tf_encs, 0)),
+            d(torch.min(tf_encs, 0)[0]), d(torch.max(tf_encs, 0)[0]))
+    print(" Act mean/std/min/max:", d(torch.mean(ys, 0)), d(torch.std(ys, 0)),
+            d(torch.min(ys, 0)[0]), d(torch.max(ys, 0)[0]))
+
+    #log('Epoch: {}, Test Loss (L1): {:.3f}, (MSE): {:.3f}'.format(epoch,
+    #    l1_loss / num_batches, mse_loss / num_batches))
+    log('Epoch: {},  Test Loss (MSE): {:.3f}, Test Loss (L1): {:.3f}, Time: {:.2f}s'.format(
+        epoch, mse_loss / num_batches, l1_loss / num_batches, time.time() - start_time))
 
 if __name__ == '__main__':
     log("Start Training")
