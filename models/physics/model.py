@@ -81,8 +81,6 @@ parser.add_argument('--discount', action="store_true",
                     help="Whether to discount future rollout states at first.")
 parser.add_argument('---beta', type=float, default=1.5e5,
                     help="The rollout discount exponent. See code.")
-parser.add_argument('---noise', type=float,
-                    help="The rollout discount exponent. See code.")
 parser.add_argument('--predict-ind', type=int, default=0,
                     help="First sample used as prediction.")
 parser.add_argument('--max-samples', type=int,
@@ -129,7 +127,7 @@ test_loader = torch.utils.data.DataLoader(test_set,
 # In memory caching
 train_cache = None
 test_cache = None
-if args.no_cache:
+if not args.no_cache:
     train_cache = []
     test_cache = []
 
@@ -380,7 +378,6 @@ if __name__ == '__main__':
         log_file = join(args.log_dir, datetime.datetime.now().strftime('%Y%m%d_%H%M%S.txt'))
         repo = git.Repo(search_parent_directories=True)
         log("Commit Hash:", repo.head.object.hexsha)
-        raw_input('Did you commit all changes? (Press Enter to continue)')
 
     log("Flags:", " ".join(sys.argv))
 
