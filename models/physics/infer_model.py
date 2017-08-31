@@ -7,11 +7,13 @@ import sys
 sys.path.append('..')
 
 import argparse
+from datetime import datetime
 import os
 from os.path import join
 import glob
 import numpy as np
 import random
+import subprocess
 import time
 from tqdm import tqdm
 import math
@@ -41,8 +43,6 @@ parser.add_argument('--epochs', type=int, default=10,
                     help='number of epochs')
 parser.add_argument('--data-file', type=str, default=join(DATAROOT, '.physics_b_n3_t75_f120_clean.h5'),
                     help='path to training data')
-parser.add_argument('--log', type=str, default='log.txt',
-                    help='Store logs.')
 parser.add_argument('--batch-size', type=int, default=5,
                     help='batch size')
 parser.add_argument('--num-points', type=int, default=-1,
@@ -74,6 +74,12 @@ parser.add_argument('--model', type=str, default='parallel',
                     help='model to use for encnet (parallel/lstm)')
 parser.add_argument('--depth', type=int, default=1,
                     help='default depth for certain classes of models')
+parser.add_argument('--log-dir', type=str, default='',
+                    help='directory to save runs in')
+parser.add_argument('--save-latest-freq', type=int, default=100,
+                    help='frequency to save the latest model')
+parser.add_argument('--continue-train', action="store_true",
+        help='Continue previous train.')
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -81,6 +87,8 @@ args.use_prior = not args.no_prior
 args.loss_fn = args.loss_fn.lower()
 args.enc_widths = args.widths
 args.rolling = True
+
+start_epoch = 1
 
 if args.progbar:
     progbar = lambda x: tqdm(x, leave=False)
@@ -143,20 +151,33 @@ if args.cuda:
     enc_model.cuda()
     trans_model.cuda()
 
-enc_optim = optim.Adam(enc_model.parameters(), lr=args.lr_enc)
+enc_optim = optim.Adam(enc_model_wrapper.parameters(), lr=args.lr_enc)
 trans_optim = optim.Adam(trans_model.parameters(), lr=args.lr_trans)
 
 mse = nn.MSELoss()
 l1 = nn.L1Loss()
 
-print "Enc net params:", networks.num_params(enc_model_wrapper)
-print "Trans net params:", networks.num_params(trans_model)
+""" LOGGING SETUP """
+
+time_str = datetime.now().strftime("%Y%m%d-%H-%S-%f") if args.log_dir == ''\
+        else args.log_dir
+log_folder = join('runs_infer', time_str)
+log_file = join(log_folder, 'log.txt')
+
+print "Logging to file {}".format(log_file)
+
+if os.path.exists(log_file):
+    if not args.continue_train and \
+            raw_input("Log file already exists, overwrite? (y/n) ") != 'y':
+        sys.exit(0)
+else:
+    os.makedirs(log_folder)
 
 """ HELPERS """
 
 def log(text):
     print text
-    with open(args.log, 'a') as f:
+    with open(log_file, 'a') as f:
         f.write(text + '\n')
 
 def zero_variable_(size, volatile=False):
@@ -178,6 +199,31 @@ def d(t):
     else:
         raise RuntimeError("Unrecognized type {}".format(type(t)))
 
+def save_checkpoint(epoch, is_latest=False):
+    state = {
+            'epoch': epoch,
+            'enc_state_dict': enc_model_wrapper.state_dict(),
+            'trans_state_dict': trans_model.state_dict(),
+            'enc_optim': enc_optim.state_dict(),
+            'trans_optim': trans_optim.state_dict()
+        }
+    filename = '.epoch{}.tar'.format(epoch) if not is_latest else 'latest.tar'
+    filename = join(log_folder, filename)
+    torch.save(state, filename)
+
+# Loads from latest.tar
+def continue_checkpoint():
+    filename = join(log_folder, 'latest.tar')
+    if not os.path.exists(filename):
+        raise RuntimeError("No checkpoint found at {}".format(filename))
+    checkpoint = torch.load(filename)
+    global start_epoch
+    start_epoch = checkpoint['epoch'] + 1
+    enc_model_wrapper.load_state_dict(checkpoint['enc_state_dict'])
+    trans_model.load_state_dict(checkpoint['trans_state_dict'])
+    enc_optim.load_state_dict(checkpoint['enc_optim'])
+    trans_optim.load_state_dict(checkpoint['trans_optim'])
+
 """ TRAIN/TEST LOOPS """
 
 def train_epoch(epoch):
@@ -189,6 +235,9 @@ def train_epoch(epoch):
     tf_encs = []
     ys = []
     for batch_idx, (x, y) in enumerate(progbar(loader)):
+        if batch_idx % args.save_latest_freq == 0:
+            save_checkpoint(epoch, is_latest=True)
+
         enc_optim.zero_grad()
         trans_optim.zero_grad()
 
@@ -260,14 +309,21 @@ def test_epoch(epoch):
     print(" Act mean/std/min/max:", d(torch.mean(ys, 0)), d(torch.std(ys, 0)),
             d(torch.min(ys, 0)[0]), d(torch.max(ys, 0)[0]))
 
-    #log('Epoch: {}, Test Loss (L1): {:.3f}, (MSE): {:.3f}'.format(epoch,
-    #    l1_loss / num_batches, mse_loss / num_batches))
     log('Epoch: {},  Test Loss (MSE): {:.3f}, Test Loss (L1): {:.3f}, Time: {:.2f}s'.format(
         epoch, mse_loss / num_batches, l1_loss / num_batches, time.time() - start_time))
 
 if __name__ == '__main__':
-    log("Start Training")
-    for epoch in range(1, args.epochs+1):
+    if args.continue_train:
+        log("Continuing train...")
+        continue_checkpoint()
+    log("{}".format(sys.argv))
+    log("Enc net params: {}".format(networks.num_params(enc_model_wrapper)))
+    log("Trans net params: {}".format(networks.num_params(trans_model)))
+    log("Git commit: {}".format(subprocess.check_output(['git', 'rev-parse', 'HEAD'])[:-1]))
+
+    print "Start Training"
+    for epoch in range(start_epoch, start_epoch+args.epochs):
         train_epoch(epoch)
+        save_checkpoint(epoch)
         test_epoch(epoch)
 
