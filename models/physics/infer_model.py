@@ -23,12 +23,12 @@ import torch.optim as optim
 import torch.utils.data
 from torch.autograd import Variable
 
+from loader import EncPhysicsDataset
 import shared.networks as networks
 
 """ CONFIG """
 
-DATAROOT = '/data/vision/oliva/scenedataset/urops/scenelayout/.physics_n3/'
-DATAROOT = '/data/vision/oliva/scenedataset/urops/scenelayout/.physics_b_n3_t75_f120_clean/'
+DATAROOT = '/data/vision/oliva/scenedataset/urops/scenelayout/'
 ROOT = '../..'
 parser = argparse.ArgumentParser(description='Physics mass inference model.')
 parser.add_argument('--seed', type=int, default=1, metavar='S',
@@ -39,15 +39,15 @@ parser.add_argument('--lr-enc', type=float, default=1e-3,
                     help='enc model learning rate')
 parser.add_argument('--epochs', type=int, default=10,
                     help='number of epochs')
-parser.add_argument('--data-dir', type=str, default=join(DATAROOT, ''),
+parser.add_argument('--data-file', type=str, default=join(DATAROOT, '.physics_b_n3_t75_f120_clean.h5'),
                     help='path to training data')
 parser.add_argument('--log', type=str, default='log.txt',
                     help='Store logs.')
 parser.add_argument('--batch-size', type=int, default=5,
                     help='batch size')
-parser.add_argument('--max-files', type=int, default=-1,
-                    help='max files to load. (-1 for no max)')
-parser.add_argument('--test-files', type=int, default=50,
+parser.add_argument('--num-points', type=int, default=-1,
+                    help='max points to use. (-1 for no max)')
+parser.add_argument('--test-points', type=int, default=1000,
                     help='num files to test.')
 parser.add_argument('--start-train-ind', type=int, default=50,
                     help='index of each group element to start backproping.')
@@ -57,14 +57,11 @@ parser.add_argument('--weight-ind', type=int, default=-1,
                     help='If set, print weight matrix of test set at ind')
 parser.add_argument('--num-workers', type=int, default=4,
                     help='Num workers to load data')
-parser.add_argument('--use-prior', action="store_true", help='Use prior')
 parser.add_argument('--progbar', action="store_true", help='Display progbar')
 parser.add_argument('--no-cuda', action='store_true', default=False,
                     help='disables CUDA training')
 parser.add_argument('--no-prior', action='store_true', default=False,
                     help='disables use of prior')
-#parser.add_argument('--rolling', action='store_true', default=False,
-#                    help='trains the model on rolling updates of the encoding')
 parser.add_argument('--loss-fn', type=str, default='mse',
                     help='path to training data')
 parser.add_argument('--widths', type=int, default=[50, 50],
@@ -73,8 +70,6 @@ parser.add_argument('--trans-widths', type=int, default=[25, 25],
                     nargs='+', help='Size of transform layer.')
 parser.add_argument('--num-sequential-frames', type=int, default=4,
                     help='Number of sequential frames to use for training')
-parser.add_argument('--mem-cache', action='store_true', default=False,
-                    help='caches all loaded files in memory')
 parser.add_argument('--model', type=str, default='parallel',
                     help='model to use for encnet (parallel/lstm)')
 parser.add_argument('--depth', type=int, default=1,
@@ -113,72 +108,6 @@ def collate(batch):
 
     return x, y
 
-# Currently sets the ratio of masses to the first mass as the y variable
-# Also logs the ratio
-class PhysicsDataset(torch.utils.data.Dataset):
-    def __init__(self, train=True):
-        super(PhysicsDataset, self).__init__()
-        self.files = glob.glob(args.data_dir + '/*.npz')
-
-        if args.max_files > 0:
-            self.files = self.files[:args.max_files]
-
-        assert len(self.files) > args.test_files
-
-        if train:
-            self.files = self.files[:-args.test_files]
-        else:
-            self.files = self.files[-args.test_files:]
-
-        with np.load(self.files[0]) as data:
-            self.x_size = data['x'].shape[1] * data['x'].shape[2] * args.num_sequential_frames
-            self.y_size = data['y'].shape[0] - 1
-
-    @staticmethod
-    def to_list(x):
-        to_torch_tensor = lambda t: torch.from_numpy(t.reshape([-1]).astype(np.float32))
-        return [to_torch_tensor(a) for a in x]
-
-    def __len__(self):
-        return len(self.files)
-
-    def __getitem__(self, key):
-        with np.load(self.files[key]) as data:
-            x = []
-            for i in xrange(len(data['x']) - args.num_sequential_frames):
-                x.append(data['x'][i:i+args.num_sequential_frames])
-            x = PhysicsDataset.to_list(x)
-            y = np.array(data['y'])
-            y = list(np.log(y[1:] / y[0]))
-
-        return x, y
-
-class CachedDataLoader:
-    def __init__(self, loader, cache):
-        self.loader_iter = loader.__iter__()
-        self.cache = cache
-
-    def __len__(self):
-        return len(self.loader_iter)
-
-    def __iter__(self):
-        return self
-
-    def next(self):
-        result = self.loader_iter.next()
-        self.cache += [result]
-        return result
-
-# Will randomly shuffle cached data
-def get_loader_or_cache(loader, cache):
-    if cache is None:
-        return loader
-    elif len(cache) == 0:
-        return CachedDataLoader(loader, cache)
-    else:
-        random.shuffle(cache)
-        return cache
-
 """ INITIALIZATIONS """
 
 print "Initializing"
@@ -186,19 +115,14 @@ print "Initializing"
 kwargs = {'num_workers': args.num_workers, 'pin_memory': True} if args.cuda else {'num_workers': 4}
 
 start_time = time.time()
-train_set = PhysicsDataset(train=True)
-train_loader = torch.utils.data.DataLoader(train_set, collate_fn=collate,
+train_set = EncPhysicsDataset(args.data_file, args.num_points, args.test_points,
+    args.num_sequential_frames, train=True)
+train_loader = torch.utils.data.DataLoader(train_set,
     batch_size=args.batch_size, shuffle=True, **kwargs)
-test_set = PhysicsDataset(train=False)
-test_loader = torch.utils.data.DataLoader(test_set, collate_fn=collate,
-    batch_size=args.batch_size, shuffle=False,  **kwargs)
-
-# In memory caching
-train_cache = None
-test_cache = None
-if args.mem_cache:
-    train_cache = []
-    test_cache = []
+test_set = EncPhysicsDataset(args.data_file, args.num_points, args.test_points,
+    args.num_sequential_frames, train=False)
+test_loader = torch.utils.data.DataLoader(test_set,
+    batch_size=args.batch_size, shuffle=False, **kwargs)
 
 x_size = train_set.x_size
 y_size = train_set.y_size
@@ -261,7 +185,7 @@ def train_epoch(epoch):
     num_batches = 0
     start_time = time.time()
     compute_time = 0.
-    loader = get_loader_or_cache(train_loader, train_cache)
+    loader = train_loader
     tf_encs = []
     ys = []
     for batch_idx, (x, y) in enumerate(progbar(loader)):
@@ -281,8 +205,8 @@ def train_epoch(epoch):
         tf_enc = trans_model(enc)
         loss = mse(tf_enc, y)
         tot_loss += loss.data[0]
-        tf_encs.append(tf_enc)
-        ys.append(y)
+        tf_encs.append(tf_enc.data.cpu())
+        ys.append(y.data.cpu())
         num_batches += 1
 
         loss.backward()
@@ -308,7 +232,7 @@ def test_epoch(epoch):
     mse_loss = 0
     num_batches = 0
     start_time = time.time()
-    loader = get_loader_or_cache(test_loader, test_cache)
+    loader = train_loader
     tf_encs = []
     ys = []
     for batch_idx, (x, y) in enumerate(progbar(loader)):
@@ -324,8 +248,8 @@ def test_epoch(epoch):
         loss = mse(tf_enc, y)
         l1_loss += l1(tf_enc, y).data[0]
         mse_loss += mse(tf_enc, y).data[0]
-        tf_encs.append(tf_enc)
-        ys.append(y)
+        tf_encs.append(tf_enc.data.cpu())
+        ys.append(y.data.cpu())
         num_batches += 1
 
     tf_encs = torch.cat(tf_encs, dim=0)
