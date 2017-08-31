@@ -232,7 +232,7 @@ def test_epoch(epoch):
     mse_loss = 0
     num_batches = 0
     start_time = time.time()
-    loader = train_loader
+    loader = test_loader
     tf_encs = []
     ys = []
     for batch_idx, (x, y) in enumerate(progbar(loader)):
