@@ -7,6 +7,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torch.utils.data
 from torch.autograd import Variable
+import time
 
 import util
 
@@ -340,14 +341,13 @@ class RelationNet(nn.Module):
             inds = inds[-1:] + inds[:-1]
             index.extend(inds)
 
-        if args.cuda:
-            self.index = Variable(torch.cuda.LongTensor(index))
-        else:
-            self.index = Variable(torch.LongTensor(index))
+        self.index = index
 
     def forward(self, x):
         base = x.repeat(1, self.n_objects-1, 1)
-        scrambled = torch.index_select(base, 1, self.index)
+
+        index = Variable(torch.LongTensor(self.index).cuda())
+        scrambled = torch.index_select(base, 1, index)
 
         h = torch.cat([base, scrambled], dim=2)
         h = h.view(-1, self.inp_size)
@@ -412,10 +412,15 @@ class PredictNet(nn.Module):
 
     def forward(self, inps):
         preds = []
-        for inp, inet in zip(inps, self.inets):
+        count = 0
+        start_time = time.time()
+        for i, inet in enumerate(self.inets):
+            inp = inps[:,i].contiguous()
             preds.append(inet(inp))
+            count += 1
 
         h = torch.cat(preds, dim=1)
+
         h = self.agg(h)
 
         return h

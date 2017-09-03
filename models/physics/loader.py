@@ -5,6 +5,8 @@ import h5py
 import random
 import glob
 
+MAX_MASS = 12.
+
 # Will randomly shuffle cached data
 def get_loader_or_cache(loader, cache):
     if cache is None:
@@ -48,8 +50,10 @@ class PhysicsDataset(torch.utils.data.Dataset):
         else:
             self.x = f['x'][num_points - num_test_points:num_points]
             self.y = f['y'][num_points - num_test_points:num_points]
+        self.y = self.y / MAX_MASS
 
         self.n_objects = self.x.shape[2]
+        self.y_size = self.y.shape[1] / self.n_objects
         self.state_size = self.x.shape[3]
 
     def __len__(self):
@@ -57,8 +61,9 @@ class PhysicsDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, key):
         x = list(self.x[key].astype(np.float32))
+        y = self.y[key].astype(np.float32)
 
-        return x
+        return x, y
 
 # For infer_model.py
 class EncPhysicsDataset(torch.utils.data.Dataset):
