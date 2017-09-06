@@ -374,38 +374,40 @@ def train_epoch(epoch):
 
     log('Non-ro weight: {:.6f}'.format(args.non_ro_weight))
 
-    mse_loss, non_ro_loss, aux_loss, num_batches = 0, 0, 0, 0
+    loss, non_ro_loss, aux_loss, num_batches = 0, 0, 0, 0
 
     for batch_idx, (x, y) in enumerate(progbar(train_loader)):
-        mse_loss_, non_ro_loss_, aux_loss_ = process_batch(x, y, train=True,
+        loss_, non_ro_loss_, aux_loss_ = process_batch(x, y, train=True,
                 non_ro_weight=args.non_ro_weight)
         non_ro_loss += non_ro_loss_
-        mse_loss += mse_loss_
+        loss += loss_
         aux_loss += aux_loss_
         num_batches += 1
 
-    log('\nTime: {:.2f}s Epoch: {} Train Loss (MSE): {:.5f} Non-ro Loss: {:.5f} Aux: {:.5f}'.format(
-        time.time() - start_time, epoch, mse_loss / num_batches,
-        non_ro_loss / num_batches, aux_loss / num_batches))
+    log('TRAIN: Epoch: {} Total Loss: {:.5f} Aux Loss: {:.5f} Non-ro Loss: {:.5f}'
+        ' Time: {:.2f}s '.format(
+        epoch, loss / num_batches, aux_loss / num_batches, non_ro_loss / num_batches,
+        time.time() - start_time))
 
 def test_epoch(epoch):
-    mse_loss, non_ro_loss, aux_loss, l1_loss, base_l1_loss, num_batches, num_preds = 0, 0, 0, 0, 0, 0, 0
+    loss, non_ro_loss, aux_loss, pred_loss, base_pred_loss, num_batches, num_preds = 0, 0, 0, 0, 0, 0, 0
 
     for batch_idx, (x, y) in enumerate(test_loader):
         render = args.render and batch_idx == 0
-        mse_loss_, non_ro_loss_, aux_loss_, l1_loss_, base_l1_loss_, num_preds_ = process_batch(x, y,
+        loss_, non_ro_loss_, aux_loss_, pred_loss_, base_pred_loss_, num_preds_ = process_batch(x, y,
                 train=False, render=render, non_ro_weight=args.non_ro_weight)
         num_preds += num_preds_
-        mse_loss += mse_loss_
+        loss += loss_
         non_ro_loss += non_ro_loss_
         aux_loss += aux_loss_
-        l1_loss += l1_loss_
-        base_l1_loss += base_l1_loss_
+        pred_loss += pred_loss_
+        base_pred_loss += base_pred_loss_
         num_batches += 1
 
-    log('Test Loss (L1): {:.5f} Base (L1): {:.5f} (MSE): {:.5f} Non-ro Loss: {:.5f} Aux: {:.5f}'.format(
-        l1_loss / num_batches, base_l1_loss / num_batches, mse_loss / num_batches,
-        non_ro_loss / num_batches, aux_loss / num_batches))
+    log('TEST: Total Loss: {:.5f} Pred Loss: {:.5f} Aux Loss: {:.5f} Non-ro Loss: {:.5f}'
+        ' Base Loss: {:.5f}'.format(
+        loss / num_batches, pred_loss / num_batches, aux_loss / num_batches,
+        non_ro_loss / num_batches, base_pred_loss / num_batches))
 
 def predict():
     batch = test_loader[0]
@@ -427,4 +429,5 @@ if __name__ == '__main__':
         train_epoch(epoch)
         save_checkpoint(epoch)
         test_epoch(epoch)
+        log('')
 
