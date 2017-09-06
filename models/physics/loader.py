@@ -50,6 +50,9 @@ class PhysicsDataset(torch.utils.data.Dataset):
         else:
             self.x = f['x'][num_points - num_test_points:num_points]
             self.y = f['y'][num_points - num_test_points:num_points]
+        a = self.x.reshape(-1, 8) * 512
+        b = np.sqrt(np.power(a[:,0] - a[:,4], 2) + np.power(a[:,1] - a[:,5], 2))
+
         self.y = self.y / MAX_MASS
 
         self.n_objects = self.x.shape[2]

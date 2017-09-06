@@ -24,6 +24,8 @@ parser.add_argument('--n-enc-frames', type=int, default=4,
 parser.add_argument('--n-frames', type=int, default=2,
                     help='Number of frames to combine during prediction at each time step.')
 parser.add_argument('--rolling', action='store_true', help='Are encodings rolling?')
+parser.add_argument('--max-pred-frames', type=int,
+                    help='Max pred frames.')
 
 """"" CHECKPOINTING """""
 
@@ -31,9 +33,9 @@ parser.add_argument('--base-log-folder', type=str, default=join(DATAROOT, 'runs/
                     help='Base log folder.')
 parser.add_argument('--log-dir', type=str, default='',
                     help='Run-specific log directory.')
-parser.add_argument('--render', action='store_true', help='Whether to render file.')
 parser.add_argument('--continue-train', action="store_true",
                     help='Continue previous train.')
+parser.add_argument('--render', action='store_true', help='Whether to render file.')
 
 """"" HYPERPARAMETERS """""
 
@@ -48,6 +50,8 @@ parser.add_argument('--epochs', type=int, default=300,
                     help='number of epochs')
 parser.add_argument('--batch-size', type=int, default=1024,
                     help='batch size')
+parser.add_argument('--loss-fn', type=str, default='mse',
+                    help='Loss function')
 
 parser.add_argument('--lr-enc', type=float, default=5e-4,
                     help='enc model learning rate')
@@ -61,10 +65,10 @@ parser.add_argument('--trans-widths', type=int, default=[20, 20, 24],
                     nargs='+', help='TransNet widths')
 parser.add_argument('--use-prior', action='store_true', help='Use a trainable prior for encoding?')
 
-parser.add_argument('--code-size', type=int, default=64,
-                    help='Size of code.')
 parser.add_argument('--lr-pred', type=float, default=5e-4,
                     help='pred model learning rate')
+parser.add_argument('--code-size', type=int, default=64,
+                    help='Size of code.')
 parser.add_argument('--anneal', action='store_true', help='Set learning rate annealing.')
 parser.add_argument('--alpha', type=float, default=6e5,
                     help='pred model learning rate alpha decay')
@@ -74,6 +78,8 @@ parser.add_argument('--discount', action="store_true",
                     help="Whether to discount future rollout states at first.")
 parser.add_argument('--beta', type=float, default=1.5e5,
                     help="The rollout discount exponent. See code.")
+parser.add_argument('--non-rollout', action='store_true', default=False,
+                    help='Set whether to only use non-rollout supervision signal.')
 parser.add_argument('--non-ro-weight', type=float, default=0.,
                     help='Set whether to use non-rollout supervision signal.')
 

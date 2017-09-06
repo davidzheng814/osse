@@ -117,7 +117,7 @@ if args.pred:
     pred_model = networks.PredictNet(n_objects, args.code_size, n_offsets, args)
     state_to_code_model = networks.StateCodeModel(args.n_frames, state_size+enc_size,
             args.code_size, n_objects)
-    code_to_state_model = networks.MLP([args.code_size, args.n_frames*state_size])
+    code_to_state_model = networks.MLP([args.code_size, state_size])
 
     if args.num_devices > 1:
         pred_model = nn.DataParallel(pred_model)
@@ -215,11 +215,17 @@ def log(*tokens):
     with open(log_file, 'a') as f:
         f.write(text + "\n")
 
-def get_loss(pred, true, is_l1=False, discount=1.):
-    if is_l1:
+def get_loss(pred, true, loss_fn='mse', discount=1., pos_only=False):
+    if pos_only:
+        pred = pred[:,:2]
+        true = true[:,:2]
+
+    if loss_fn == 'mse':
+        return discount * mse(pred, true)
+    elif loss_fn == 'l1':
         return discount * l1(pred, true)
     else:
-        return discount * mse(pred, true)
+        raise RuntimeError("Currently not supported.")
 
 def get_json_state(state):
     payload = []
@@ -228,8 +234,8 @@ def get_json_state(state):
         for obj in sample:
             obj = obj.tolist()
             # TODO Hardcoded numbers. 
-            pos.append({'x':obj[4], 'y':obj[5]})
-            vel.append({'x':obj[6], 'y':obj[7]})
+            pos.append({'x':obj[0], 'y':obj[1]})
+            vel.append({'x':obj[2], 'y':obj[3]})
 
         payload.append({'pos':pos, 'vel':vel})
 
@@ -253,11 +259,14 @@ def process_batch(x, y, train, non_ro_weight=0., render=False):
     num_prep_frames = max(args.offsets)+args.n_frames-1
     enc_x, pred_x = x[:args.num_encode], x[args.num_encode - num_prep_frames:]
 
-    mse_loss = zero_variable_((1,), volatile=not train)
-    aux_loss = 0
+    if args.max_pred_frames:
+        pred_x = pred_x[:args.max_pred_frames+num_prep_frames]
+
+    loss = zero_variable_((1,), volatile=not train)
+    aux_loss = zero_variable_((1,), volatile=not train)
     if not train:
-        l1_loss = zero_variable_((1,), volatile=not train)
-        base_l1_loss = zero_variable_((1,), volatile=not train)
+        pred_loss = zero_variable_((1,), volatile=not train)
+        base_pred_loss = zero_variable_((1,), volatile=not train)
 
     """Encoding step."""
     if args.enc:
@@ -273,7 +282,7 @@ def process_batch(x, y, train, non_ro_weight=0., render=False):
         enc = enc.view(-1, enc_size)
 
         if not args.pred:
-            mse_loss += get_loss(enc, y)
+            loss += get_loss(enc, y, loss_fn=args.loss_fn)
             if not train:
                 l1_loss += get_loss(enc, y)
     elif args.pred:
@@ -290,19 +299,18 @@ def process_batch(x, y, train, non_ro_weight=0., render=False):
         codes = [None for _ in range(args.n_frames-1)]
         for start_ind in range(len(pred_x)-args.n_frames+1):
             inp = pred_x[start_ind:start_ind+args.n_frames]
-            out = torch.cat(pred_x_wo_enc[start_ind:start_ind+args.n_frames], dim=1)
+            out = pred_x_wo_enc[start_ind]
             code = state_to_code_model(inp) # TODO should we just cat inp before passing in?
             state = code_to_state_model(code)
 
-            aux_loss_ = get_loss(state, out)
-            mse_loss += aux_loss_
-            aux_loss += aux_loss_.data[0]
+            aux_loss_ = get_loss(state, out, loss_fn=args.loss_fn)
+            loss += aux_loss_
+            aux_loss += aux_loss_
 
             codes.append(code)
 
         ro_codes = [code for code in codes]
 
-        # print("C")
         # Add prediction losses
         num_preds = 0
         preds, ro_preds, true_states = [], [], []
@@ -319,45 +327,47 @@ def process_batch(x, y, train, non_ro_weight=0., render=False):
             ro_preds.append(ro_pred)
             ro_codes[i] = ro_pred_code
 
-            true_state = torch.cat(pred_x_wo_enc[i-1:i+1], dim=1)
+            true_state = pred_x_wo_enc[i]
             true_states.append(true_state)
 
-            mse_loss += get_loss(ro_pred, true_state)
-            non_ro_loss += get_loss(pred, true_state)
+            loss += get_loss(ro_pred, true_state, loss_fn=args.loss_fn)
+            non_ro_loss += get_loss(pred, true_state, loss_fn=args.loss_fn)
 
             if not train:
-                l1_loss += get_loss(ro_pred, true_state, is_l1=True)
-                # TODO Hardcoded n-frames = 2
-                base_pred = torch.cat([pred_x_wo_enc[i-1], pred_x_wo_enc[i-1]], dim=1)
-                base_l1_loss += get_loss(base_pred, true_state)
+                pred_loss += get_loss(ro_pred, true_state, loss_fn='mse')
+                base_pred_loss += get_loss(pred_x_wo_enc[i-1], true_state, loss_fn='mse')
             num_preds += 1
 
         if render:
-            ro_preds, true_states = [[a.data.cpu().numpy().reshape(-1, n_objects,
-                                   args.n_frames*state_size)
+            ro_preds, true_states = [[a.data.cpu().numpy().reshape(-1, n_objects, state_size)
                                    for a in states] for states in (ro_preds, true_states)]
-            for i in range(5): # Iterate through each group in batch.
-                pred = [a[i] for a in ro_preds]
+            for i in range(10): # Iterate through each group in batch.
+                ro_pred = [a[i] for a in ro_preds]
                 true_state = [a[i] for a in true_states]
                 with open(join(log_folder, 'data_'+str(i)+'.json'), 'w') as f:
                     payload = {
-                        'states': get_json_state(pred),
+                        'states': get_json_state(ro_pred),
                         'true_states': get_json_state(true_state),
                     }
                     f.write(json.dumps(payload))
 
     """Apply gradients."""
+    if args.non_rollout:
+        loss = aux_loss + non_ro_loss
+    else:
+        loss += non_ro_weight * non_ro_loss
+
     if train:
-        mse_loss += non_ro_weight * non_ro_loss
-        mse_loss.backward()
+        loss.backward()
         if args.enc:
             enc_optim.step()
         if args.pred:
             pred_optim.step()
 
-        return mse_loss.data[0], non_ro_loss.data[0], aux_loss
+        return loss.data[0], non_ro_loss.data[0], aux_loss.data[0]
     else:
-        return mse_loss.data[0], non_ro_loss.data[0], aux_loss, l1_loss.data[0], base_l1_loss.data[0], num_preds
+        return (loss.data[0], non_ro_loss.data[0], aux_loss.data[0],
+                pred_loss.data[0], base_pred_loss.data[0], num_preds)
 
 def train_epoch(epoch):
     start_time = time.time()
@@ -394,7 +404,7 @@ def test_epoch(epoch):
         num_batches += 1
 
     log('Test Loss (L1): {:.5f} Base (L1): {:.5f} (MSE): {:.5f} Non-ro Loss: {:.5f} Aux: {:.5f}'.format(
-        l1_loss / num_preds, base_l1_loss / num_preds, mse_loss / num_batches,
+        l1_loss / num_batches, base_l1_loss / num_batches, mse_loss / num_batches,
         non_ro_loss / num_batches, aux_loss / num_batches))
 
 def predict():
