@@ -46,14 +46,16 @@ class PhysicsDataset(torch.utils.data.Dataset):
 
         if train:
             self.x = f['x'][:num_points - num_test_points]
-            self.y = f['y'][:num_points - num_test_points]
+            self.y = f['y'][:num_points - num_test_points] / MAX_MASS
         else:
             self.x = f['x'][num_points - num_test_points:num_points]
-            self.y = f['y'][num_points - num_test_points:num_points]
-        a = self.x.reshape(-1, 8) * 512
-        b = np.sqrt(np.power(a[:,0] - a[:,4], 2) + np.power(a[:,1] - a[:,5], 2))
+            self.y = f['y'][num_points - num_test_points:num_points] / MAX_MASS
 
-        self.y = self.y / MAX_MASS
+            # long_x and long_y are prepared as torch tensors. x and y are just numpy arrays.
+            long_x = f['long_x'][:]
+            self.long_x = [torch.Tensor(np.array(samp))
+                           for samp in zip(*[list(group) for group in long_x])]
+            self.long_y = torch.Tensor(f['long_y'][:] / MAX_MASS)
 
         self.n_objects = self.x.shape[2]
         self.y_size = self.y.shape[1] / self.n_objects
@@ -63,10 +65,7 @@ class PhysicsDataset(torch.utils.data.Dataset):
         return len(self.x)
 
     def __getitem__(self, key):
-        x = list(self.x[key].astype(np.float32))
-        y = self.y[key].astype(np.float32)
-
-        return x, y
+        return list(self.x[key]), self.y[key]
 
 # For infer_model.py
 class EncPhysicsDataset(torch.utils.data.Dataset):

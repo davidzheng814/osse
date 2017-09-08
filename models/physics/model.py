@@ -45,6 +45,10 @@ torch.manual_seed(args.seed)
 if args.cuda:
     torch.cuda.manual_seed(args.seed)
     args.num_devices = len(os.environ['CUDA_VISIBLE_DEVICES'].split(','))
+    if args.num_devices > 1:
+        args.batch_size = (args.batch_size / args.num_devices) * args.num_devices
+        args.num_points = (args.num_points / args.num_devices) * args.num_devices
+        args.test_points = (args.test_points / args.num_devices) * args.num_devices
 
 if args.progbar:
     progbar = lambda x: tqdm(x, leave=False)
@@ -96,10 +100,6 @@ if args.enc:
     else:
         raise RuntimeError("Model type {} not recognized.".format(args.enc_model))
 
-    if args.num_devices > 0:
-        enc_model = nn.DataParallel(enc_model)
-        trans_model = nn.DataParallel(trans_model)
-
     if args.cuda:
         enc_net.cuda()
         enc_model.cuda()
@@ -118,11 +118,6 @@ if args.pred:
     state_to_code_model = networks.StateCodeModel(args.n_frames, state_size+enc_size,
             args.code_size, n_objects)
     code_to_state_model = networks.MLP([args.code_size, state_size])
-
-    if args.num_devices > 1:
-        pred_model = nn.DataParallel(pred_model)
-        state_to_code_model = nn.DataParallel(state_to_code_model)
-        code_to_state_model = nn.DataParallel(code_to_state_model)
 
     if args.cuda:
         pred_model.cuda()
@@ -209,16 +204,25 @@ def zero_variable_(size, volatile=False):
     else:
         return Variable(torch.FloatTensor(*size).zero_(), volatile=volatile)
 
+def normal_variable_(size, std=1.0, volatile=False):
+    if args.cuda:
+        return Variable(torch.cuda.FloatTensor(*size).normal_(std=std), volatile=volatile)
+    else:
+        return Variable(torch.FloatTensor(*size).normal_(std=std), volatile=volatile)
+
 def log(*tokens):
     print(*tokens)
     text = " ".join([str(x) for x in tokens])
     with open(log_file, 'a') as f:
         f.write(text + "\n")
 
-def get_loss(pred, true, loss_fn='mse', discount=1., pos_only=False):
+def get_loss(pred, true, loss_fn='mse', discount=1., pos_only=False, vel_only=False):
     if pos_only:
         pred = pred[:,:2]
         true = true[:,:2]
+    elif vel_only:
+        pred = pred[:,2:]
+        true = true[:,2:]
 
     if loss_fn == 'mse':
         return discount * mse(pred, true)
@@ -241,8 +245,12 @@ def get_json_state(state):
 
     return payload
 
+def get_ro_discount(epoch):
+    epoch_growth = 2
+    return 0.1 ** (1. / (1 + float(epoch-1) / epoch_growth))
+
 """ TRAIN/TEST LOOPS """
-def process_batch(x, y, train, non_ro_weight=0., render=False):
+def process_batch(x, y, train, non_ro_weight=0., render=False, ro_discount=1.):
     if train:
         if args.enc:
             enc_optim.zero_grad()
@@ -259,7 +267,7 @@ def process_batch(x, y, train, non_ro_weight=0., render=False):
     num_prep_frames = max(args.offsets)+args.n_frames-1
     enc_x, pred_x = x[:args.num_encode], x[args.num_encode - num_prep_frames:]
 
-    if args.max_pred_frames:
+    if args.max_pred_frames and not render:
         pred_x = pred_x[:args.max_pred_frames+num_prep_frames]
 
     loss = zero_variable_((1,), volatile=not train)
@@ -299,13 +307,14 @@ def process_batch(x, y, train, non_ro_weight=0., render=False):
         codes = [None for _ in range(args.n_frames-1)]
         for start_ind in range(len(pred_x)-args.n_frames+1):
             inp = pred_x[start_ind:start_ind+args.n_frames]
-            out = pred_x_wo_enc[start_ind]
             code = state_to_code_model(inp) # TODO should we just cat inp before passing in?
-            state = code_to_state_model(code)
 
-            aux_loss_ = get_loss(state, out, loss_fn=args.loss_fn)
-            loss += aux_loss_
-            aux_loss += aux_loss_
+            if not args.predict_delta:
+                out = pred_x_wo_enc[start_ind+args.n_frames-1]
+                state = code_to_state_model(code)
+                aux_loss_ = get_loss(state, out, loss_fn=args.loss_fn, pos_only=True)
+                loss += aux_loss_
+                aux_loss += aux_loss_
 
             codes.append(code)
 
@@ -314,34 +323,47 @@ def process_batch(x, y, train, non_ro_weight=0., render=False):
         # Add prediction losses
         num_preds = 0
         preds, ro_preds, true_states = [], [], []
+        cur_discount = 1.
         for i in range(num_prep_frames, len(codes)):
             # i equals current frame index to predict.
             inps = torch.stack([codes[i-offset] for offset in args.offsets], dim=1)
             pred_code = pred_model(inps)
             pred = code_to_state_model(pred_code)
-            preds.append(pred)
 
             ro_inps = torch.stack([ro_codes[i-offset] for offset in args.offsets], dim=1)
             ro_pred_code = pred_model(ro_inps)
             ro_pred = code_to_state_model(ro_pred_code)
+
+            if args.predict_delta:
+                ro_pred += pred_x_wo_enc[i-1] if len(preds) == 0 else ro_preds[-1]
+                pred += pred_x_wo_enc[i-1]
+
+            preds.append(pred)
             ro_preds.append(ro_pred)
-            ro_codes[i] = ro_pred_code
+
+            if args.noise and train:
+                ro_codes[i] = ro_pred_code + \
+                              normal_variable_(ro_pred_code.size(), std=args.noise)
+            else:l
+                ro_codes[i] = ro_pred_code
 
             true_state = pred_x_wo_enc[i]
             true_states.append(true_state)
 
-            loss += get_loss(ro_pred, true_state, loss_fn=args.loss_fn)
-            non_ro_loss += get_loss(pred, true_state, loss_fn=args.loss_fn)
+            loss += get_loss(ro_pred, true_state, loss_fn=args.loss_fn, pos_only=True) * cur_discount
+            non_ro_loss += get_loss(pred, true_state, loss_fn=args.loss_fn, pos_only=True)
 
             if not train:
-                pred_loss += get_loss(ro_pred, true_state, loss_fn='mse')
-                base_pred_loss += get_loss(pred_x_wo_enc[i-1], true_state, loss_fn='mse')
+                pred_loss += get_loss(ro_pred, true_state, loss_fn='mse', pos_only=True)
+                base_pred_loss += get_loss(pred_x_wo_enc[i-1], true_state, loss_fn='mse', pos_only=True)
+
+            cur_discount *= ro_discount
             num_preds += 1
 
         if render:
             ro_preds, true_states = [[a.data.cpu().numpy().reshape(-1, n_objects, state_size)
                                    for a in states] for states in (ro_preds, true_states)]
-            for i in range(10): # Iterate through each group in batch.
+            for i in range(len(ro_preds[0])): # Iterate through each group in batch.
                 ro_pred = [a[i] for a in ro_preds]
                 true_state = [a[i] for a in true_states]
                 with open(join(log_folder, 'data_'+str(i)+'.json'), 'w') as f:
@@ -372,13 +394,14 @@ def process_batch(x, y, train, non_ro_weight=0., render=False):
 def train_epoch(epoch):
     start_time = time.time()
 
-    log('Non-ro weight: {:.6f}'.format(args.non_ro_weight))
+    ro_discount = 1. #get_ro_discount(epoch)
+    log('Non-ro weight: {:.6f} RO discount: {:.6f}'.format(args.non_ro_weight, ro_discount))
 
     loss, non_ro_loss, aux_loss, num_batches = 0, 0, 0, 0
 
     for batch_idx, (x, y) in enumerate(progbar(train_loader)):
         loss_, non_ro_loss_, aux_loss_ = process_batch(x, y, train=True,
-                non_ro_weight=args.non_ro_weight)
+                non_ro_weight=args.non_ro_weight, ro_discount=ro_discount)
         non_ro_loss += non_ro_loss_
         loss += loss_
         aux_loss += aux_loss_
@@ -390,12 +413,11 @@ def train_epoch(epoch):
         time.time() - start_time))
 
 def test_epoch(epoch):
+    ro_discount = 1. #get_ro_discount(epoch)
     loss, non_ro_loss, aux_loss, pred_loss, base_pred_loss, num_batches, num_preds = 0, 0, 0, 0, 0, 0, 0
 
     for batch_idx, (x, y) in enumerate(test_loader):
-        render = args.render and batch_idx == 0
-        loss_, non_ro_loss_, aux_loss_, pred_loss_, base_pred_loss_, num_preds_ = process_batch(x, y,
-                train=False, render=render, non_ro_weight=args.non_ro_weight)
+        loss_, non_ro_loss_, aux_loss_, pred_loss_, base_pred_loss_, num_preds_ = process_batch(x, y, train=False, non_ro_weight=args.non_ro_weight, ro_discount=ro_discount)
         num_preds += num_preds_
         loss += loss_
         non_ro_loss += non_ro_loss_
@@ -403,6 +425,9 @@ def test_epoch(epoch):
         pred_loss += pred_loss_
         base_pred_loss += base_pred_loss_
         num_batches += 1
+
+    if args.render:
+        process_batch(test_set.long_x, test_set.long_y, train=False, render=True)
 
     log('TEST: Total Loss: {:.5f} Pred Loss: {:.5f} Aux Loss: {:.5f} Non-ro Loss: {:.5f}'
         ' Base Loss: {:.5f}'.format(
@@ -418,9 +443,16 @@ if __name__ == '__main__':
         continue_checkpoint()
     log("{}".format(sys.argv))
     if args.enc:
+        if args.num_devices > 0:
+            enc_model = nn.DataParallel(enc_model)
+            trans_model = nn.DataParallel(trans_model)
         log("Enc net params: {}".format(networks.num_params(enc_model)))
         log("Trans net params: {}".format(networks.num_params(trans_model)))
     if args.pred:
+        if args.num_devices > 1:
+            pred_model = nn.DataParallel(pred_model)
+            state_to_code_model = nn.DataParallel(state_to_code_model)
+            code_to_state_model = nn.DataParallel(code_to_state_model)
         log("Pred net params: {}".format(networks.num_params(pred_model)))
     log("Git commit: {}".format(subprocess.check_output(['git', 'rev-parse', 'HEAD'])[:-1]))
 
