@@ -146,7 +146,7 @@ elif args.model == 'lstm':
 else:
     raise RuntimeError("Model type {} not recognized.".format(args.model))
 
-trans_model = networks.TransformNet(args.enc_widths[-1], args.trans_widths,  y_size)
+trans_model = networks.TransformNet(args.enc_widths[-1], args.trans_widths, y_size)
 if args.cuda:
     enc_model.cuda()
     trans_model.cuda()

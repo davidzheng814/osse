@@ -27,7 +27,7 @@ import torch.optim as optim
 import torch.utils.data
 from torch.autograd import Variable
 
-from loader import PhysicsDataset, get_loader_or_cache, MAX_MASS
+from loader import PhysicsDataset, EncPhysicsDataset, MAX_MASS
 from parser import parser
 import shared.networks as networks
 
@@ -35,7 +35,7 @@ import shared.networks as networks
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
-args.rolling = True
+args.rolling = False
 args.enc = args.enc or args.all
 args.pred = args.pred or args.all
 
@@ -59,9 +59,10 @@ print("Initializing")
 kwargs = {'num_workers': args.num_workers, 'pin_memory': True} if args.cuda else {'num_workers': 4}
 
 train_set = PhysicsDataset(args.data_file, args.num_points, args.test_points, train=True)
+test_set = PhysicsDataset(args.data_file, args.num_points, args.test_points, train=False)
+
 train_loader = torch.utils.data.DataLoader(train_set,
     batch_size=args.batch_size, shuffle=True, **kwargs)
-test_set = PhysicsDataset(args.data_file, args.num_points, args.test_points, train=False)
 test_loader = torch.utils.data.DataLoader(test_set,
     batch_size=args.batch_size, shuffle=False, **kwargs)
 
@@ -106,8 +107,7 @@ if args.enc:
         trans_model.cuda()
 
     enc_optim = optim.Adam(
-            list(enc_model.parameters()),
-            list(trans_model.parameters()),
+            list(enc_model.parameters()) + list(trans_model.parameters()),
             lr=args.lr_enc)
 else:
     enc_size = y_size
@@ -279,12 +279,22 @@ def process_batch(x, y, train, non_ro_weight=0., render=False):
             inps.append(inp)
 
         enc = enc_model(inps)
+        enc = trans_model(enc)
         enc = enc.view(-1, enc_size)
 
         if not args.pred:
+            l1_loss = 0
+            enc = enc.view(-1, enc_size * n_objects)
             loss += get_loss(enc, y, loss_fn=args.loss_fn)
             if not train:
-                l1_loss += get_loss(enc, y)
+                l1_loss += get_loss(enc, y, loss_fn='l1')
+
+            if train:
+                loss.backward()
+                enc_optim.step()
+                return (loss.data[0], 0, 0)
+            else:
+                return (loss.data[0], 0, 0, 0, 0, 0)
     elif args.pred:
         enc = y
 
@@ -330,12 +340,13 @@ def process_batch(x, y, train, non_ro_weight=0., render=False):
             true_state = pred_x_wo_enc[i]
             true_states.append(true_state)
 
-            loss += get_loss(ro_pred, true_state, loss_fn=args.loss_fn)
-            non_ro_loss += get_loss(pred, true_state, loss_fn=args.loss_fn)
+            loss += get_loss(ro_pred, true_state, loss_fn=args.loss_fn, pos_only=True)
+            non_ro_loss += get_loss(pred, true_state, loss_fn=args.loss_fn, pos_only=True)
 
             if not train:
-                pred_loss += get_loss(ro_pred, true_state, loss_fn='mse')
-                base_pred_loss += get_loss(pred_x_wo_enc[i-1], true_state, loss_fn='mse')
+                pred_loss += get_loss(ro_pred, true_state, loss_fn='mse', pos_only=True)
+                base_pred_loss += get_loss(pred_x_wo_enc[i-1], true_state, loss_fn='mse',
+                        pos_only=True)
             num_preds += 1
 
         if render:
@@ -351,11 +362,11 @@ def process_batch(x, y, train, non_ro_weight=0., render=False):
                     }
                     f.write(json.dumps(payload))
 
-    """Apply gradients."""
-    if args.non_rollout:
-        loss = aux_loss + non_ro_loss
-    else:
-        loss += non_ro_weight * non_ro_loss
+        """Apply gradients."""
+        if args.non_rollout:
+            loss = aux_loss + non_ro_loss
+        else:
+            loss += non_ro_weight * non_ro_loss
 
     if train:
         loss.backward()
