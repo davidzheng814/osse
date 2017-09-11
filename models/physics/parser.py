@@ -7,7 +7,7 @@ parser = argparse.ArgumentParser(description='Physics mass inference model.')
 
 """"" DATA LOADING """""
 
-parser.add_argument('--data-file', type=str, default=join(DATAROOT, '.physics_b_n2_t75_f120_clean.h5'),
+parser.add_argument('--data-file', type=str, default=join(DATAROOT, '.physics_b_n3_t75_f120_clean.h5'),
                     help='path to training data')
 parser.add_argument('--num-points', type=int, default=-1,
                     help='max points to use. (-1 for no max)')
