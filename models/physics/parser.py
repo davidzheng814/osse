@@ -69,19 +69,18 @@ parser.add_argument('--lr-pred', type=float, default=5e-4,
                     help='pred model learning rate')
 parser.add_argument('--code-size', type=int, default=64,
                     help='Size of code.')
-parser.add_argument('--anneal', action='store_true', help='Set learning rate annealing.')
+parser.add_argument('--ro-discount', help="")
+parser.add_argument('--noise', type=float, help="specify standard deviation of noise.")
 parser.add_argument('--alpha', type=float, default=6e5,
                     help='pred model learning rate alpha decay')
 parser.add_argument('--offsets', type=int, default=[1, 2, 4],
                     nargs='+', help='The timestep offset values.')
-parser.add_argument('--discount', action="store_true",
-                    help="Whether to discount future rollout states at first.")
-parser.add_argument('--beta', type=float, default=1.5e5,
-                    help="The rollout discount exponent. See code.")
 parser.add_argument('--non-rollout', action='store_true', default=False,
                     help='Set whether to only use non-rollout supervision signal.')
 parser.add_argument('--non-ro-weight', type=float, default=0.,
                     help='Set whether to use non-rollout supervision signal.')
+parser.add_argument('--predict-delta', action='store_true',
+                    help='Whether to predict the delta of position or velocity.')
 
 """"" MISCELLANEOUS """""
 
