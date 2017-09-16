@@ -246,11 +246,12 @@ def get_json_state(state):
     return payload
 
 def get_ro_discount(epoch):
-    epoch_growth = 2
-    return 0.1 ** (1. / (1 + float(epoch-1) / epoch_growth))
+    if args.beta:
+        return 1 - math.e ** (-float(epoch-1) / args.beta)
+    return 1
 
 """ TRAIN/TEST LOOPS """
-def process_batch(x, y, train, non_ro_weight=0., render=False, ro_discount=1.):
+def process_batch(enc_x, pred_xs, y, train, non_ro_weight=0., render=False, ro_discount=1.):
     if train:
         if args.enc:
             enc_optim.zero_grad()
@@ -258,23 +259,28 @@ def process_batch(x, y, train, non_ro_weight=0., render=False, ro_discount=1.):
             pred_optim.zero_grad()
 
     if args.cuda:
-        x = [samp.cuda() for samp in x]
+        enc_x = enc_x.cuda()
+        pred_xs = pred_xs.cuda()
         y = y.cuda()
 
-    x = [Variable(samp, volatile=not train) for samp in x]
+    enc_x = list(enc_x.permute(1, 0, 2, 3).contiguous()) # timestep dimension first
+    pred_xs = [list(run) for run in pred_xs.permute(1, 2, 0, 3, 4).contiguous()] # runs and timestep dimensions first
+
+    enc_x = [Variable(samp, volatile=not train) for samp in enc_x]
+    pred_xs = [[Variable(samp, volatile=not train) for samp in pred_x] for pred_x in pred_xs]
     y = Variable(y).view(-1, y_size)
 
     num_prep_frames = max(args.offsets)+args.n_frames-1
-    enc_x, pred_x = x[:args.num_encode], x[args.num_encode - num_prep_frames:]
 
     if args.max_pred_frames and not render:
-        pred_x = pred_x[:args.max_pred_frames+num_prep_frames]
+        pred_xs = [pred_x[:args.max_pred_frames+num_prep_frames] for pred_x in pred_xs]
 
     loss = zero_variable_((1,), volatile=not train)
     aux_loss = zero_variable_((1,), volatile=not train)
     if not train:
-        pred_loss = zero_variable_((1,), volatile=not train)
-        base_pred_loss = zero_variable_((1,), volatile=not train)
+        pred_loss = zero_variable_((1,), volatile=True)
+        base_pred_loss = zero_variable_((1,), volatile=True)
+        base_discount_pred_loss = zero_variable_((1,), volatile=True)
 
     """Encoding step."""
     if args.enc:
@@ -308,67 +314,69 @@ def process_batch(x, y, train, non_ro_weight=0., render=False, ro_discount=1.):
 
     """Prediction rollout step."""
     if args.pred:
-        non_ro_loss = zero_variable_((1,), volatile=not train)
+        for pred_x in pred_xs:
+            non_ro_loss = zero_variable_((1,), volatile=not train)
 
-        pred_x_wo_enc = [samp.view(-1, state_size) for samp in pred_x]
-        pred_x = [torch.cat([samp, enc], dim=1) for samp in pred_x_wo_enc]
+            pred_x_wo_enc = [samp.view(-1, state_size) for samp in pred_x]
+            pred_x = [torch.cat([samp, enc], dim=1) for samp in pred_x_wo_enc]
 
-        # Add auxiliary losses
-        codes = [None for _ in range(args.n_frames-1)]
-        for start_ind in range(len(pred_x)-args.n_frames+1):
-            inp = pred_x[start_ind:start_ind+args.n_frames]
-            code = state_to_code_model(inp) # TODO should we just cat inp before passing in?
+            # Add auxiliary losses
+            codes = [None for _ in range(args.n_frames-1)]
+            for start_ind in range(len(pred_x)-args.n_frames+1):
+                inp = pred_x[start_ind:start_ind+args.n_frames]
+                code = state_to_code_model(inp) # TODO should we just cat inp before passing in?
 
-            if not args.predict_delta:
-                out = pred_x_wo_enc[start_ind+args.n_frames-1]
-                state = code_to_state_model(code)
-                aux_loss_ = get_loss(state, out, loss_fn=args.loss_fn, pos_only=True)
-                loss += aux_loss_
-                aux_loss += aux_loss_
+                if not args.predict_delta:
+                    out = pred_x_wo_enc[start_ind+args.n_frames-1]
+                    state = code_to_state_model(code)
+                    aux_loss_ = get_loss(state, out, loss_fn=args.loss_fn, pos_only=True)
+                    loss += aux_loss_
+                    aux_loss += aux_loss_
 
-            codes.append(code)
+                codes.append(code)
 
-        ro_codes = [code for code in codes]
+            ro_codes = [code for code in codes]
 
-        # Add prediction losses
-        num_preds = 0
-        preds, ro_preds, true_states = [], [], []
-        cur_discount = 1.
-        for i in range(num_prep_frames, len(codes)):
-            # i equals current frame index to predict.
-            inps = torch.stack([codes[i-offset] for offset in args.offsets], dim=1)
-            pred_code = pred_model(inps)
-            pred = code_to_state_model(pred_code)
+            # Add prediction losses
+            num_preds = 0
+            preds, ro_preds, true_states = [], [], []
+            cur_discount = 1.
+            for i in range(num_prep_frames, len(codes)):
+                # i equals current frame index to predict.
+                inps = torch.stack([codes[i-offset] for offset in args.offsets], dim=1)
+                pred_code = pred_model(inps)
+                pred = code_to_state_model(pred_code)
 
-            ro_inps = torch.stack([ro_codes[i-offset] for offset in args.offsets], dim=1)
-            ro_pred_code = pred_model(ro_inps)
-            ro_pred = code_to_state_model(ro_pred_code)
+                ro_inps = torch.stack([ro_codes[i-offset] for offset in args.offsets], dim=1)
+                ro_pred_code = pred_model(ro_inps)
+                ro_pred = code_to_state_model(ro_pred_code)
 
-            if args.predict_delta:
-                ro_pred += pred_x_wo_enc[i-1] if len(preds) == 0 else ro_preds[-1]
-                pred += pred_x_wo_enc[i-1]
+                if args.predict_delta:
+                    ro_pred += pred_x_wo_enc[i-1] if len(preds) == 0 else ro_preds[-1]
+                    pred += pred_x_wo_enc[i-1]
 
-            preds.append(pred)
-            ro_preds.append(ro_pred)
+                preds.append(pred)
+                ro_preds.append(ro_pred)
 
-            if args.noise and train:
-                ro_codes[i] = ro_pred_code + \
-                              normal_variable_(ro_pred_code.size(), std=args.noise)
-            else:
-                ro_codes[i] = ro_pred_code
+                if args.noise and train:
+                    ro_codes[i] = ro_pred_code + \
+                                  normal_variable_(ro_pred_code.size(), std=args.noise)
+                else:
+                    ro_codes[i] = ro_pred_code
 
-            true_state = pred_x_wo_enc[i]
-            true_states.append(true_state)
+                true_state = pred_x_wo_enc[i]
+                true_states.append(true_state)
 
-            loss += get_loss(ro_pred, true_state, loss_fn=args.loss_fn, pos_only=True) * cur_discount
-            non_ro_loss += get_loss(pred, true_state, loss_fn=args.loss_fn, pos_only=True)
+                loss += get_loss(ro_pred, true_state, loss_fn=args.loss_fn, pos_only=True) * cur_discount
+                non_ro_loss += get_loss(pred, true_state, loss_fn=args.loss_fn, pos_only=True)
 
-            if not train:
-                pred_loss += get_loss(ro_pred, true_state, loss_fn='mse', pos_only=True)
-                base_pred_loss += get_loss(pred_x_wo_enc[i-1], true_state, loss_fn='mse', pos_only=True)
+                if not train:
+                    pred_loss += get_loss(ro_pred, true_state, loss_fn='mse', pos_only=True)
+                    base_pred_loss += get_loss(pred_x_wo_enc[i-1], true_state, loss_fn='mse', pos_only=True)
+                    base_discount_pred_loss += get_loss(pred_x_wo_enc[i-1], true_state, loss_fn='mse', pos_only=True) * cur_discount
 
-            cur_discount *= ro_discount
-            num_preds += 1
+                cur_discount *= ro_discount
+                num_preds += 1
 
         if render:
             ro_preds, true_states = [[a.data.cpu().numpy().reshape(-1, n_objects, state_size)
@@ -399,19 +407,21 @@ def process_batch(x, y, train, non_ro_weight=0., render=False, ro_discount=1.):
         return loss.data[0], non_ro_loss.data[0], aux_loss.data[0]
     else:
         return (loss.data[0], non_ro_loss.data[0], aux_loss.data[0],
-                pred_loss.data[0], base_pred_loss.data[0], num_preds)
+                pred_loss.data[0], base_pred_loss.data[0], base_discount_pred_loss.data[0], 
+                num_preds)
 
 def train_epoch(epoch):
     start_time = time.time()
 
-    ro_discount = 1. #get_ro_discount(epoch)
+    ro_discount = get_ro_discount(epoch)
     log('Non-ro weight: {:.6f} RO discount: {:.6f}'.format(args.non_ro_weight, ro_discount))
 
     loss, non_ro_loss, aux_loss, num_batches = 0, 0, 0, 0
 
-    for batch_idx, (x, y) in enumerate(progbar(train_loader)):
-        loss_, non_ro_loss_, aux_loss_ = process_batch(x, y, train=True,
-                non_ro_weight=args.non_ro_weight, ro_discount=ro_discount)
+    for batch_idx, (enc_x, pred_xs, y) in enumerate(progbar(train_loader)):
+        loss_, non_ro_loss_, aux_loss_ = \
+            process_batch(enc_x, pred_xs, y, train=True, non_ro_weight=args.non_ro_weight,
+                          ro_discount=ro_discount)
         non_ro_loss += non_ro_loss_
         loss += loss_
         aux_loss += aux_loss_
@@ -423,26 +433,30 @@ def train_epoch(epoch):
         time.time() - start_time))
 
 def test_epoch(epoch):
-    ro_discount = 1. #get_ro_discount(epoch)
-    loss, non_ro_loss, aux_loss, pred_loss, base_pred_loss, num_batches, num_preds = 0, 0, 0, 0, 0, 0, 0
+    ro_discount = get_ro_discount(epoch)
+    loss, non_ro_loss, aux_loss, pred_loss, base_pred_loss, base_discount_pred_loss, num_batches, num_preds = 0, 0, 0, 0, 0, 0, 0, 0
 
-    for batch_idx, (x, y) in enumerate(test_loader):
-        loss_, non_ro_loss_, aux_loss_, pred_loss_, base_pred_loss_, num_preds_ = process_batch(x, y, train=False, non_ro_weight=args.non_ro_weight, ro_discount=ro_discount)
+    for batch_idx, (enc_x, pred_xs, y) in enumerate(test_loader):
+        loss_, non_ro_loss_, aux_loss_, pred_loss_, base_pred_loss_, base_discount_pred_loss_, num_preds_ = \
+            process_batch(enc_x, pred_xs, y, train=False, non_ro_weight=args.non_ro_weight,
+                          ro_discount=ro_discount)
         num_preds += num_preds_
         loss += loss_
         non_ro_loss += non_ro_loss_
         aux_loss += aux_loss_
         pred_loss += pred_loss_
         base_pred_loss += base_pred_loss_
+        base_discount_pred_loss += base_discount_pred_loss_
         num_batches += 1
 
     if args.render:
-        process_batch(test_set.long_x, test_set.long_y, train=False, render=True)
+        process_batch(test_set.enc_x_long, test_set.pred_xs_long, test_set.y_long,
+                      train=False, render=True)
 
     log('TEST: Total Loss: {:.5f} Pred Loss: {:.5f} Aux Loss: {:.5f} Non-ro Loss: {:.5f}'
-        ' Base Loss: {:.5f}'.format(
+        ' Base Loss: {:.5f} Base Discount Loss: {:.5f}'.format(
         loss / num_batches, pred_loss / num_batches, aux_loss / num_batches,
-        non_ro_loss / num_batches, base_pred_loss / num_batches))
+        non_ro_loss / num_batches, base_pred_loss / num_batches, base_discount_pred_loss / num_batches))
 
 def predict():
     batch = test_loader[0]

@@ -42,30 +42,31 @@ class PhysicsDataset(torch.utils.data.Dataset):
 
         f = h5py.File(data_file, 'r')
 
-        num_points = num_points if num_points >= 0 else f['x'].shape[0]
+        num_points = num_points if num_points >= 0 else f['enc_x'].shape[0]
 
         if train:
-            self.x = f['x'][:num_points - num_test_points]
+            self.enc_x = f['enc_x'][:num_points - num_test_points]
+            self.pred_xs = f['pred_x'][:num_points - num_test_points]
             self.y = f['y'][:num_points - num_test_points] / MAX_MASS
         else:
-            self.x = f['x'][num_points - num_test_points:num_points]
+            self.enc_x = f['enc_x'][num_points - num_test_points:num_points]
+            self.pred_xs = f['pred_x'][num_points - num_test_points:num_points]
             self.y = f['y'][num_points - num_test_points:num_points] / MAX_MASS
 
             # long_x and long_y are prepared as torch tensors. x and y are just numpy arrays.
-            long_x = f['long_x'][:]
-            self.long_x = [torch.Tensor(np.array(samp))
-                           for samp in zip(*[list(group) for group in long_x])]
-            self.long_y = torch.Tensor(f['long_y'][:] / MAX_MASS)
+            self.enc_x_long = torch.Tensor(f['enc_x_long'][:])
+            self.pred_xs_long = torch.Tensor(f['pred_x_long'][:])
+            self.y_long = torch.Tensor(f['y_long'][:] / MAX_MASS)
 
-        self.n_objects = self.x.shape[2]
+        self.n_objects = self.enc_x.shape[2]
         self.y_size = self.y.shape[1] / self.n_objects
-        self.state_size = self.x.shape[3]
+        self.state_size = self.enc_x.shape[3]
 
     def __len__(self):
-        return len(self.x)
+        return len(self.enc_x)
 
     def __getitem__(self, key):
-        return list(self.x[key]), self.y[key]
+        return self.enc_x[key], self.pred_xs[key], self.y[key]
 
 # For infer_model.py
 class EncPhysicsDataset(torch.utils.data.Dataset):
