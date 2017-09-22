@@ -49,9 +49,9 @@ class PhysicsDataset(torch.utils.data.Dataset):
             self.pred_xs = f['pred_x'][:num_points - num_test_points]
             self.y = f['y'][:num_points - num_test_points] / MAX_MASS
         else:
-            self.enc_x = f['enc_x'][num_points - num_test_points:num_points]
-            self.pred_xs = f['pred_x'][num_points - num_test_points:num_points]
-            self.y = f['y'][num_points - num_test_points:num_points] / MAX_MASS
+            self.enc_x = f['enc_x'][-num_test_points:]
+            self.pred_xs = f['pred_x'][-num_test_points:]
+            self.y = f['y'][-num_test_points:] / MAX_MASS
 
             # long_x and long_y are prepared as torch tensors. x and y are just numpy arrays.
             self.enc_x_long = torch.Tensor(f['enc_x_long'][:])

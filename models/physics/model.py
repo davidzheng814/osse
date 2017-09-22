@@ -310,7 +310,10 @@ def process_batch(enc_x, pred_xs, y, train, non_ro_weight=0., render=False, ro_d
             else:
                 return (loss.data[0], 0, 0, 0, 0, 0)
     elif args.pred:
-        enc = y
+        if args.no_enc:
+            enc = zero_variable_(y.size(), volatile=not train)
+        else:
+            enc = y
 
     """Prediction rollout step."""
     if args.pred:

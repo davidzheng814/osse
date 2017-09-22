@@ -45,6 +45,8 @@ parser.add_argument('--pred', action='store_true',
                     help='Whether to use PredNet.')
 parser.add_argument('--all', action='store_true',
                     help='Whether to use both enc net and pred net.')
+parser.add_argument('--no-enc', action='store_true',
+                    help='Whether to replace encoding with zeros.')
 
 parser.add_argument('--epochs', type=int, default=300,
                     help='number of epochs')
