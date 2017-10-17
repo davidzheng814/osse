@@ -1,5 +1,7 @@
 from operator import mul
 
+from functools import reduce
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -9,7 +11,7 @@ import torch.utils.data
 from torch.autograd import Variable
 import time
 
-import util
+from . import util
 
 # Number of trainable scalar parameters in model
 def num_params(model):
@@ -237,7 +239,7 @@ class LSTMEncNet(nn.Module):
         assert depth >= 1
         lstms = []
         lstms += [nn.LSTMCell(sample_size, enc_size)]
-        for _ in xrange(depth - 1):
+        for _ in range(depth - 1):
             lstms += [nn.LSTMCell(enc_size, enc_size)]
         self.lstms = nn.ModuleList(lstms)
 
@@ -245,7 +247,7 @@ class LSTMEncNet(nn.Module):
         _, states = enc0
         h = sample
         new_states = []
-        for i in xrange(len(self.lstms)):
+        for i in range(len(self.lstms)):
             prev_h, prev_c = states[i]
             h, c = self.lstms[i](h, (prev_h, prev_c))
             new_states.append((h,c))
@@ -336,7 +338,7 @@ class RelationNet(nn.Module):
         self.MLP = MLP([self.inp_size, code_size, code_size, code_size])
 
         index = []
-        inds = range(n_objects)
+        inds = list(range(n_objects))
         for i in range(1, n_objects):
             inds = inds[-1:] + inds[:-1]
             index.extend(inds)

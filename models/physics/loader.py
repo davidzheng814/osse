@@ -59,7 +59,7 @@ class PhysicsDataset(torch.utils.data.Dataset):
             self.y_long = torch.Tensor(f['y_long'][:] / MAX_MASS)
 
         self.n_objects = self.enc_x.shape[2]
-        self.y_size = self.y.shape[1] / self.n_objects
+        self.y_size = self.y.shape[1] // self.n_objects
         self.state_size = self.enc_x.shape[3]
 
     def __len__(self):

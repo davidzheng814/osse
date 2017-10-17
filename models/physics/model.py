@@ -90,7 +90,7 @@ if args.enc:
                                       n_objects*state_size*args.n_enc_frames,
                                       depth=args.depth)
         enc_model = networks.RecurrentWrapper(enc_net, args, enc0_structure)
-        enc_size = args.trans_widths[-1] / n_objects
+        enc_size = args.trans_widths[-1] // n_objects
         trans_model = networks.TransformNet(args.enc_widths[-1],
                                             args.trans_widths[:-1],
                                             args.trans_widths[-1])
