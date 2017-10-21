@@ -332,7 +332,7 @@ def process_batch(enc_x, pred_xs, y, train, non_ro_weight=0., render=False, ro_d
                 if not args.predict_delta:
                     out = pred_x_wo_enc[start_ind+args.n_frames-1]
                     state = code_to_state_model(code)
-                    aux_loss_ = get_loss(state, out, loss_fn=args.loss_fn, pos_only=True)
+                    aux_loss_ = get_loss(state, out, loss_fn=args.loss_fn)
                     loss += aux_loss_
                     aux_loss += aux_loss_
 
@@ -342,7 +342,9 @@ def process_batch(enc_x, pred_xs, y, train, non_ro_weight=0., render=False, ro_d
 
             # Add prediction losses
             num_preds = 0
-            preds, ro_preds, true_states = [], [], []
+            preds = [x for x in pred_x_wo_enc]
+            ro_preds = [x for x in pred_x_wo_enc]
+            true_states = [x for x in pred_x_wo_enc]
             cur_discount = 1.
             for i in range(num_prep_frames, len(codes)):
                 # i equals current frame index to predict.
@@ -358,20 +360,23 @@ def process_batch(enc_x, pred_xs, y, train, non_ro_weight=0., render=False, ro_d
                     ro_pred += pred_x_wo_enc[i-1] if len(preds) == 0 else ro_preds[-1]
                     pred += pred_x_wo_enc[i-1]
 
-                preds.append(pred)
-                ro_preds.append(ro_pred)
+                preds[i] = pred
+                ro_preds[i] = ro_pred
+
+                if args.recode:
+                    inps = ro_preds[i-args.n_frames+1:i+1]
+                    inps = [torch.cat([samp, enc], dim=1) for samp in inps]
+                    ro_pred_code = state_to_code_model(inps)
 
                 if args.noise and train:
-                    ro_codes[i] = ro_pred_code + \
-                                  normal_variable_(ro_pred_code.size(), std=args.noise)
+                    ro_codes[i] = ro_pred_code + normal_variable_(ro_pred_code.size(), std=args.noise)
                 else:
                     ro_codes[i] = ro_pred_code
 
                 true_state = pred_x_wo_enc[i]
-                true_states.append(true_state)
 
-                loss += get_loss(ro_pred, true_state, loss_fn=args.loss_fn, pos_only=True) * cur_discount
-                non_ro_loss += get_loss(pred, true_state, loss_fn=args.loss_fn, pos_only=True)
+                loss += get_loss(ro_pred, true_state, loss_fn=args.loss_fn) * cur_discount
+                non_ro_loss += get_loss(pred, true_state, loss_fn=args.loss_fn)
 
                 if not train:
                     pred_loss += get_loss(ro_pred, true_state, loss_fn='mse', pos_only=True)
@@ -460,9 +465,6 @@ def test_epoch(epoch):
         ' Base Loss: {:.5f} Base Discount Loss: {:.5f}'.format(
         loss / num_batches, pred_loss / num_batches, aux_loss / num_batches,
         non_ro_loss / num_batches, base_pred_loss / num_batches, base_discount_pred_loss / num_batches))
-
-def predict():
-    batch = test_loader[0]
 
 if __name__ == '__main__':
     if args.continue_train:

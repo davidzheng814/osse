@@ -83,6 +83,8 @@ parser.add_argument('--non-ro-weight', type=float, default=0.,
                     help='Set whether to use non-rollout supervision signal.')
 parser.add_argument('--predict-delta', action='store_true',
                     help='Whether to predict the delta of position or velocity.')
+parser.add_argument('--recode', action='store_true',
+                    help='Whether to recode the state from the predictions.')
 parser.add_argument('--beta', type=float,
                     help='Higher beta indicates longer periods of timestep discounting.')
 
