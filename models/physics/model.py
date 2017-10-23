@@ -18,6 +18,7 @@ import subprocess
 import shutil
 from datetime import datetime
 
+import h5py
 import git
 import numpy as np
 import torch
@@ -146,6 +147,12 @@ if os.path.exists(log_file):
 else:
     os.makedirs(log_folder)
 
+
+if args.enc and args.save_encs:
+    f = h5py.File(join(log_folder, 'encs.h5'), 'w')
+    f.create_dataset('enc', (len(train_set), n_objects, enc_size), dtype='f')
+    f.create_dataset('y', (len(train_set), n_objects, y_size), dtype='f')
+
 """"" HELPERS """""
 # Prints tensor/variable as list
 def d(t):
@@ -187,6 +194,13 @@ def continue_checkpoint():
     checkpoint = torch.load(filename)
     global start_epoch
     start_epoch = checkpoint['epoch'] + 1
+
+    for key in checkpoint:
+        if isinstance(checkpoint[key], dict):
+            checkpoint[key] = {
+                k[7:] if 'module' in k else k:v
+                for k, v in checkpoint[key].items()
+            }
 
     if args.enc:
         enc_model.load_state_dict(checkpoint['enc_state_dict'])
@@ -250,6 +264,18 @@ def get_ro_discount(epoch):
         return 1 - math.e ** (-float(epoch-1) / args.beta)
     return 1
 
+
+save_enc_ind = 0
+def save_encs(enc, y):
+    global save_enc_ind
+    enc = enc.data.cpu().numpy().reshape(-1, n_objects, enc_size)
+    y = y.data.cpu().numpy().reshape(-1, n_objects, y_size)
+    num_points = len(enc)
+    f['enc'][save_enc_ind:save_enc_ind+num_points] = enc
+    f['y'][save_enc_ind:save_enc_ind+num_points] = y
+
+    save_enc_ind = (save_enc_ind + num_points) % len(train_set)
+
 """ TRAIN/TEST LOOPS """
 def process_batch(enc_x, pred_xs, y, train, non_ro_weight=0., render=False, ro_discount=1.):
     if train:
@@ -295,6 +321,9 @@ def process_batch(enc_x, pred_xs, y, train, non_ro_weight=0., render=False, ro_d
         enc = enc_model(inps)
         enc = trans_model(enc)
         enc = enc.view(-1, enc_size)
+
+        if args.save_encs and train:
+            save_encs(enc, y)
 
         if not args.pred:
             l1_loss = 0
