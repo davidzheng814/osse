@@ -1,4 +1,5 @@
 from operator import mul
+from functools import reduce
 
 from functools import reduce
 
@@ -12,6 +13,9 @@ from torch.autograd import Variable
 import time
 
 from . import util
+
+def cuda_opt(x, use_cuda):
+    return x.cuda() if use_cuda else x
 
 # Number of trainable scalar parameters in model
 def num_params(model):
@@ -58,20 +62,22 @@ class RecurrentWrapper(BaseWrapper):
     Wraps a model that outputs an encoding at every time step after receiving the
     previous encoding.
     """
+
+
     def __init__(self, step_model, args, enc0_structure=None):
         super(RecurrentWrapper, self).__init__()
         self.step_model = step_model
         self.use_cuda = args.cuda
         self.enc_width = args.enc_widths[-1]
         if enc0_structure is None:
-            self.enc0 = nn.Parameter(torch.Tensor(np.zeros((self.enc_width,))).cuda())
+            self.enc0 = nn.Parameter(cuda_opt(torch.Tensor(np.zeros((self.enc_width,))), self.use_cuda))
         else:
             def initialize_structure(enc0_structure):
-                li = [nn.Parameter(torch.Tensor(np.zeros((x,))).cuda())
+                li = [nn.Parameter(cuda_opt(torch.Tensor(np.zeros((x,))), self.use_cuda))
                       if type(x) is int else initialize_structure(x) 
                       for x in enc0_structure]
                 return li
-            self.enc0 = nn.Parameter(torch.Tensor(np.zeros((self.enc_width,))).cuda()),\
+            self.enc0 = nn.Parameter(cuda_opt(torch.Tensor(np.zeros((self.enc_width,))), self.use_cuda)),\
                 initialize_structure(enc0_structure)
 
         self.rolling = args.rolling
@@ -92,8 +98,7 @@ class RecurrentWrapper(BaseWrapper):
         encs.append(enc)
 
         for i, sample in enumerate(sample_batch[:-1]):
-            if self.use_cuda:
-                sample = sample.cuda()
+            sample = cuda_opt(sample, self.use_cuda)
             if not isinstance(sample, Variable):
                 sample = Variable(sample)
             enc = self.step_model(sample, enc)
@@ -107,6 +112,58 @@ class RecurrentWrapper(BaseWrapper):
             return encs
         else:
             return encs[-1]
+
+class SymEncWrapper(BaseWrapper):
+    def __init__(self, n_objects, state_size, args):
+        super(SymEncWrapper, self).__init__()
+        self.use_cuda = args.cuda
+        self.enc_width = args.enc_widths[-1]
+        self.enc_width_per_obj = self.enc_width // n_objects
+
+        self.enc_net = LSTMEncNet(self.enc_width_per_obj,
+                                  n_objects*state_size*args.n_enc_frames,
+                                  depth=args.depth)
+        enc0_structure = [(self.enc_width_per_obj, self.enc_width_per_obj)] * args.depth
+
+        self.wrappers = []
+        for obj in range(n_objects):
+            self.wrappers.append(RecurrentWrapper(self.enc_net, args, enc0_structure))
+        self.wrappers = nn.ModuleList(self.wrappers)
+
+        self.trans_net = TransformNet(args.enc_widths[-1],
+                                      args.trans_widths[:-1],
+                                      args.trans_widths[-1])
+
+        self.n_enc_frames = args.n_enc_frames
+        self.n_objects = n_objects
+
+        self.rolling = args.rolling
+
+    # sample_batch has shape (time_steps, batch_size, x_size)
+    # only the last 2 layers are torch Tensors
+    def forward(self, sample_batch):
+        batch_size = sample_batch[0].size()[0] # get dynamic batch size
+        sample_batch = [frame.view(batch_size, self.n_enc_frames, self.n_objects, -1)
+                        for frame in sample_batch]
+
+        sample_batch = [[frame[:,:,obj_ind] for obj_ind in range(self.n_objects)] for frame in sample_batch]
+
+        encs = []
+        for obj_ind in range(self.n_objects):
+            reordered_batch = []
+            for frame in sample_batch:
+                new_frame = frame[obj_ind:obj_ind+1] + frame[:obj_ind] + frame[obj_ind+1:]
+                reordered_batch.append(torch.stack(new_frame, dim=2).view(batch_size, -1))
+
+            encs.append(self.wrappers[obj_ind](reordered_batch))
+
+        trans_encs = []
+        for obj_ind in range(self.n_objects):
+            new_enc = torch.cat(encs[obj_ind:obj_ind+1] + encs[:obj_ind] + encs[obj_ind+1:], dim=1)
+            trans_encs.append(self.trans_net(new_enc))
+
+        trans_enc = torch.cat(trans_encs, dim=1)
+        return trans_enc
 
 class ConfidenceWeightWrapper(BaseWrapper):
     """
@@ -139,8 +196,7 @@ class ConfidenceWeightWrapper(BaseWrapper):
             confs[0,:,:] = 1e-9 # Prevents nan in initial backprop
 
         for i, sample in enumerate(sample_batch[:-1]):
-            if self.use_cuda:
-                sample = sample.cuda()
+            sample = cuda_opt(sample, self.use_cuda)
             if not isinstance(sample, Variable):
                 sample = Variable(sample)
             local_enc, conf = self.step_model(sample)
@@ -253,15 +309,53 @@ class LSTMEncNet(nn.Module):
             new_states.append((h,c))
         return h, new_states
 
+class SymLSTMEncNet(nn.Module):
+    def __init__(self, n_objects, n_enc_frames, enc_size, sample_size, depth=1):
+        super(SymLSTMEncNet, self).__init__()
+
+        assert depth >= 1
+        lstms = []
+        enc_size_per_obj = enc_size // n_objects
+        lstms += [nn.LSTMCell(sample_size, enc_size_per_obj)]
+        for _ in range(depth - 1):
+            lstms += [nn.LSTMCell(enc_size_per_obj, enc_size_per_obj)]
+        self.lstms = nn.ModuleList(lstms)
+        self.n_objects = n_objects
+        self.n_enc_frames = n_enc_frames
+
+    def forward(self, sample, enc0):
+        _, states = enc0
+        new_states = [[] for _ in range(self.n_objects)]
+
+        out_enc = []
+        for obj_ind, (obj_states, obj_new_states) in enumerate(zip(states, new_states)):
+            cur_sample = sample.view(len(sample), self.n_enc_frames, self.n_objects, -1)
+
+            reordered_sample = [cur_sample[:,:,obj_ind:obj_ind+1]]
+            if obj_ind != 0:
+                reordered_sample.append(cur_sample[:,:,:obj_ind])
+            if obj_ind + 1 < self.n_objects:
+                reordered_sample.append(cur_sample[:,:,obj_ind+1:])
+            cur_sample = torch.cat(reordered_sample, dim=2)
+
+            batch_size = sample.size()[0]
+            h = cur_sample.view(batch_size, -1)
+
+            for i in range(len(self.lstms)):
+                prev_h, prev_c = obj_states[i]
+                h, c = self.lstms[i](h, (prev_h, prev_c))
+                obj_new_states.append((h,c))
+            out_enc.append(h)
+
+        out_enc = torch.cat(out_enc, dim=1)
+        return out_enc, new_states
+
 class ParallelEncNet(nn.Module):
     def __init__(self, widths, sample_size, args):
         super(ParallelEncNet, self).__init__()
 
-        self.enc0 = torch.Tensor(np.zeros((1, widths[-1])))
-        self.conf0 =torch.Tensor(np.ones((1, widths[-1])))
-        if args.cuda:
-            self.enc0.cuda()
-            self.conf0.cuda()
+        self.enc0 = cuda_opt(torch.Tensor(np.zeros((1, widths[-1]))), args.cuda)
+        self.conf0 = cuda_opt(torch.Tensor(np.ones((1, widths[-1]))), args.cuda)
         self.enc0 = nn.Parameter(self.enc0)
         self.conf0 = nn.Parameter(self.conf0)
 
@@ -344,11 +438,12 @@ class RelationNet(nn.Module):
             index.extend(inds)
 
         self.index = index
+        self.use_cuda = args.cuda
 
     def forward(self, x):
         base = x.repeat(1, self.n_objects-1, 1)
 
-        index = Variable(torch.LongTensor(self.index).cuda())
+        index = Variable(cuda_opt(torch.LongTensor(self.index), self.use_cuda))
         scrambled = torch.index_select(base, 1, index)
 
         h = torch.cat([base, scrambled], dim=2)

@@ -47,9 +47,11 @@ if args.cuda:
     torch.cuda.manual_seed(args.seed)
     args.num_devices = len(os.environ['CUDA_VISIBLE_DEVICES'].split(','))
     if args.num_devices > 1:
-        args.batch_size = (args.batch_size / args.num_devices) * args.num_devices
-        args.num_points = (args.num_points / args.num_devices) * args.num_devices
-        args.test_points = (args.test_points / args.num_devices) * args.num_devices
+        args.batch_size = (args.batch_size // args.num_devices) * args.num_devices
+        args.num_points = (args.num_points // args.num_devices) * args.num_devices
+        args.test_points = (args.test_points // args.num_devices) * args.num_devices
+else:
+    args.num_devices = 1
 
 if args.progbar:
     progbar = lambda x: tqdm(x, leave=False)
@@ -95,6 +97,8 @@ if args.enc:
         trans_model = networks.TransformNet(args.enc_widths[-1],
                                             args.trans_widths[:-1],
                                             args.trans_widths[-1])
+        # enc_model = networks.SymEncWrapper(n_objects, state_size, args)
+        # enc_size = args.trans_widths[-1]
         if not args.pred:
             assert enc_size == y_size
     elif args.enc_model == 'parallel':
@@ -133,9 +137,18 @@ if args.pred:
 
 """"" LOGGING SETUP """""
 
-time_str = datetime.now().strftime("%Y%m%d-%H-%S-%f") if args.log_dir == ''\
-        else args.log_dir
-log_folder = join(args.base_log_folder, time_str)
+if args.log_dir == '':
+    log_counter_file = join(args.base_log_folder, 'log_counter.txt')
+    with open(log_counter_file, 'r') as f:
+        new_counter = int(f.read()) + 1
+
+    with open(log_counter_file, 'w') as f:
+        f.write(str(new_counter) + '\n')
+
+    log_folder = join(args.base_log_folder, str(new_counter))
+else:
+    log_folder = join(args.base_log_folder, args.log_dir)
+
 log_file = join(log_folder, 'log.txt')
 
 print("Logging to file {}".format(log_file))
@@ -147,13 +160,18 @@ if os.path.exists(log_file):
 else:
     os.makedirs(log_folder)
 
-
-if args.enc and args.save_encs:
-    f = h5py.File(join(log_folder, 'encs.h5'), 'w')
-    f.create_dataset('enc', (len(train_set), n_objects, enc_size), dtype='f')
-    f.create_dataset('y', (len(train_set), n_objects, y_size), dtype='f')
-
 """"" HELPERS """""
+
+def open_encs_file():
+    global encs_file
+    encs_file = h5py.File(join(log_folder, 'encs.h5'), 'a')
+    if 'enc' not in encs_file:
+        encs_file.create_dataset('enc', (len(train_set), n_objects, enc_size), dtype='f')
+    if 'y' not in encs_file:
+        encs_file.create_dataset('y', (len(train_set), n_objects, y_size), dtype='f')
+
+    return encs_file
+
 # Prints tensor/variable as list
 def d(t):
     if isinstance(t, torch.Tensor) or isinstance(t, torch.cuda.FloatTensor):
@@ -211,6 +229,7 @@ def continue_checkpoint():
         pred_model.load_state_dict(checkpoint['pred_state_dict'])
         code_to_state_model.load_state_dict(checkpoint['cts_state_dict'])
         state_to_code_model.load_state_dict(checkpoint['stc_state_dict'])
+        pred_optim.load_state_dict(checkpoint['pred_optim'])
 
 def zero_variable_(size, volatile=False):
     if args.cuda:
@@ -267,14 +286,19 @@ def get_ro_discount(epoch):
 
 save_enc_ind = 0
 def save_encs(enc, y):
-    global save_enc_ind
+    global save_enc_ind, encs_file
     enc = enc.data.cpu().numpy().reshape(-1, n_objects, enc_size)
     y = y.data.cpu().numpy().reshape(-1, n_objects, y_size)
     num_points = len(enc)
-    f['enc'][save_enc_ind:save_enc_ind+num_points] = enc
-    f['y'][save_enc_ind:save_enc_ind+num_points] = y
+    encs_file['enc'][save_enc_ind:save_enc_ind+num_points] = enc
+    encs_file['y'][save_enc_ind:save_enc_ind+num_points] = y
 
     save_enc_ind = (save_enc_ind + num_points) % len(train_set)
+
+    if save_enc_ind == 0:
+        print('Saving Encs')
+        encs_file.close()
+        open_encs_file()
 
 """ TRAIN/TEST LOOPS """
 def process_batch(enc_x, pred_xs, y, train, non_ro_weight=0., render=False, ro_discount=1.):
@@ -451,7 +475,7 @@ def train_epoch(epoch):
     start_time = time.time()
 
     ro_discount = get_ro_discount(epoch)
-    log('Non-ro weight: {:.6f} RO discount: {:.6f}'.format(args.non_ro_weight, ro_discount))
+    log('Log Folder: {:s} Non-ro weight: {:.6f} RO discount: {:.6f}'.format(log_folder, args.non_ro_weight, ro_discount))
 
     loss, non_ro_loss, aux_loss, num_batches = 0, 0, 0, 0
 
@@ -501,7 +525,7 @@ if __name__ == '__main__':
         continue_checkpoint()
     log("{}".format(sys.argv))
     if args.enc:
-        if args.num_devices > 0:
+        if args.num_devices > 1:
             enc_model = nn.DataParallel(enc_model)
             trans_model = nn.DataParallel(trans_model)
         log("Enc net params: {}".format(networks.num_params(enc_model)))
@@ -513,6 +537,9 @@ if __name__ == '__main__':
             code_to_state_model = nn.DataParallel(code_to_state_model)
         log("Pred net params: {}".format(networks.num_params(pred_model)))
     log("Git commit: {}".format(subprocess.check_output(['git', 'rev-parse', 'HEAD'])[:-1]))
+
+    if args.enc and args.save_encs:
+        open_encs_file()
 
     print("Start Training")
     for epoch in range(start_epoch, args.epochs+start_epoch):
