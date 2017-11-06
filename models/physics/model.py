@@ -5,7 +5,7 @@ print("Importing")
 import sys
 sys.path.append('..')
 
-from os.path import join
+from os.path import join, basename
 import os
 import argparse
 import glob
@@ -475,7 +475,8 @@ def train_epoch(epoch):
     start_time = time.time()
 
     ro_discount = get_ro_discount(epoch)
-    log('Log Folder: {:s} Non-ro weight: {:.6f} RO discount: {:.6f}'.format(log_folder, args.non_ro_weight, ro_discount))
+    log('Log Folder: {:s} Non-ro weight: {:.6f} RO discount: {:.6f}'.format(
+        basename(log_folder), args.non_ro_weight, ro_discount))
 
     loss, non_ro_loss, aux_loss, num_batches = 0, 0, 0, 0
 

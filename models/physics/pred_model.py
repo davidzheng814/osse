@@ -1,0 +1,121 @@
+import tensorflow as tf
+
+from shared import mlp
+
+def relation_net(x, code_size):
+    """RelationNet computes the net of pairwise interactions for each object. 
+
+    @param x - input tensor [batch_size, n_objects, full_state_size]
+    """
+
+    n_objects = int(x.get_shape()[1])
+    full_state_size = int(x.get_shape()[2])
+
+    scramble_inds = [] 
+    object_inds = list(range(n_objects))
+    for _ in range(n_objects-1):
+        object_inds = object_inds[-1:] + object_inds[:-1]
+        scramble_inds.extend(object_inds)
+
+    x_left = tf.tile(x, [1, n_objects - 1, 1])
+    x_right = tf.stack([x[:,ind] for ind in scramble_inds], axis=1)
+
+    x_pair = tf.concat([x_left, x_right], axis=2)
+
+    assert int(x_pair.get_shape()[2]) == 2*full_state_size
+
+    h = tf.reshape(x_pair, [-1, 2*full_state_size])
+    h = mlp(h, [code_size, code_size, code_size])
+
+    h = tf.reshape(h, [-1, n_objects-1, n_objects, code_size])
+    h = tf.reduce_sum(h, axis=1)
+    h = tf.reshape(h, [-1, code_size])
+
+    return h
+
+def interaction_net(x, n_objects, code_size):
+    """InteractionNet computes new object codes from previous object codes.
+
+    @param x - input tensor [batch_size * n_objects, full_state_size]
+    @param n_objects - num objects
+    """
+
+    full_state_size = int(x.get_shape()[1])
+
+    with tf.variable_scope("re_net"): # Relation Network
+        pair_dynamics = relation_net(tf.reshape(x, [-1, n_objects, full_state_size]), code_size)
+
+    with tf.variable_scope("sd_net"): # Self-Dynamics Network
+        self_dynamics = mlp(x, [code_size, code_size])
+
+    with tf.variable_scope("aff"): # Aff Network
+        tot_dynamics = pair_dynamics + self_dynamics
+        tot_dynamics = mlp(tot_dynamics, [code_size, code_size, code_size])
+
+    with tf.variable_scope("agg"): # Aggregation Network
+        inp = tf.concat([x, tot_dynamics], axis=1)
+        pred = mlp(inp, [code_size, code_size, code_size])
+
+    return pred
+
+def predict_net_cell(x, n_offsets, n_objects, code_size, state_size):
+    """Combines object codes at multiple time steps to compute new object codes. 
+
+    @param x - list of n_offsets input tensors, with shapes:
+               [batch_size * n_objects, full_state_size]
+    @param n_offsets - number of timestep offsets to use. 
+    """
+
+    full_state_size = int(x[0].get_shape()[1])
+
+    preds = [] # list of preds, with shapes [batch_size * n_objects, full_state_size]
+    for ind in range(n_offsets):
+        with tf.variable_scope("inet_"+str(ind)):
+            pred = interaction_net(x[ind], n_objects, code_size)
+            preds.append(pred)
+
+    h = tf.concat(preds, axis=1)
+    with tf.variable_scope("inets_agg"):
+        h = mlp(h, [code_size, code_size, state_size])
+
+    return h
+
+def predict_net(x0, enc, frames_per_samp, code_size, n_ro_frames, offsets):
+    """Returns list of n_ro_frames future object states from an initial object state.
+   
+    @param x0 - initial state tensor of shape [batch_size, n_prep_frames, n_objects, state_size]
+    @param enc - encoding tensor of shape [batch_size, n_objects, enc_size]
+    
+    """
+
+    n_objects = int(x0.get_shape()[2])
+    state_size = int(x0.get_shape()[3])
+    enc_size = int(enc.get_shape()[2])
+
+    enc = tf.reshape(enc, [-1, enc_size])
+
+    x0 = tf.unstack(x0, axis=1)
+    x0 = [tf.reshape(state, [-1, state_size]) for state in x0]
+
+    full_states = [None for _ in range(frames_per_samp-1)]
+    for i in range(0, len(x0)-frames_per_samp+1):
+        frame_ind = frames_per_samp + frames_per_samp - 1
+        full_state = tf.concat(x0[i:i+frames_per_samp]+[enc], axis=1,
+                name="full_state_"+str(frame_ind))
+        full_states.append(full_state)
+
+    states = [state for state in x0]
+    for i in range(n_ro_frames - len(x0)):
+        frame_ind = i + len(x0) # frame_ind = timestep to predict.
+        cur_inp = [full_states[frame_ind-offset] for offset in offsets]
+
+        with tf.variable_scope("pred_net_cell", reuse=(i != 0)):
+            pred_state = predict_net_cell(cur_inp, len(offsets), n_objects, code_size, state_size)
+            states.append(pred_state)
+            full_states.append(tf.concat(states[-frames_per_samp:]+[enc], axis=1))
+
+    states = tf.reshape(tf.stack(states, axis=1), [-1, n_objects, n_ro_frames, state_size])
+    states = tf.transpose(states, [0, 2, 1, 3])
+
+    return states
+

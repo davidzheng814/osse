@@ -19,9 +19,7 @@ parser.add_argument('--num-workers', type=int, default=16,
                     help='Num workers to load data')
 parser.add_argument('--num-encode', type=int, default=50,
                     help='Number of timesteps to use to encode.')
-parser.add_argument('--n-enc-frames', type=int, default=4,
-                    help='Number of frames to combine during prediction at each time step.')
-parser.add_argument('--n-frames', type=int, default=2,
+parser.add_argument('--frames-per-samp', type=int, default=2,
                     help='Number of frames to combine during prediction at each time step.')
 parser.add_argument('--rolling', action='store_true', help='Are encodings rolling?')
 parser.add_argument('--max-pred-frames', type=int,
@@ -31,7 +29,7 @@ parser.add_argument('--max-pred-frames', type=int,
 
 parser.add_argument('--base-log-folder', type=str, default=join(DATAROOT, 'runs/'),
                     help='Base log folder.')
-parser.add_argument('--log-dir', type=str, default='',
+parser.add_argument('--log-dir', type=str, default='logs/',
                     help='Run-specific log directory.')
 parser.add_argument('--continue-train', action="store_true",
                     help='Continue previous train.')
@@ -49,23 +47,25 @@ parser.add_argument('--no-enc', action='store_true',
                     help='Whether to replace encoding with zeros.')
 parser.add_argument('--save-encs', action='store_true',
                     help='Whether to save encodings.')
+parser.add_argument('--runtime', action='store_true',
+                    help='Whether to record runtimes.')
 
 parser.add_argument('--epochs', type=int, default=300,
                     help='number of epochs')
-parser.add_argument('--batch-size', type=int, default=1024,
+parser.add_argument('--batch-size', type=int, default=10,
                     help='batch size')
 parser.add_argument('--loss-fn', type=str, default='mse',
                     help='Loss function')
+parser.add_argument('--lr', type=float, default=5e-4,
+                    help='model learning rate')
 
-parser.add_argument('--lr-enc', type=float, default=5e-4,
-                    help='enc model learning rate')
 parser.add_argument('--enc-model', type=str, default='lstm',
                     help='EncNet to use')
-parser.add_argument('--enc-widths', type=int, default=[24],
+parser.add_argument('--enc-lstm-widths', type=int, default=[24, 24, 24],
                     nargs='+', help='EncNet widths')
 parser.add_argument('--depth', type=int, default=4,
                     help='Depth of EncNet')
-parser.add_argument('--trans-widths', type=int, default=[20, 20, 24],
+parser.add_argument('--enc-dense-widths', type=int, default=[20, 20, 24],
                     nargs='+', help='TransNet widths')
 parser.add_argument('--use-prior', action='store_true', help='Use a trainable prior for encoding?')
 

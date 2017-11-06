@@ -509,12 +509,9 @@ class PredictNet(nn.Module):
 
     def forward(self, inps):
         preds = []
-        count = 0
-        start_time = time.time()
         for i, inet in enumerate(self.inets):
             inp = inps[:,i].contiguous()
             preds.append(inet(inp))
-            count += 1
 
         h = torch.cat(preds, dim=1)
 
