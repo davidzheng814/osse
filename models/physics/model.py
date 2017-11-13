@@ -31,6 +31,11 @@ y_size = train_set.y_size
 enc_size = args.enc_dense_widths[-1] // n_objects
 n_prep_frames = max(args.offsets) + args.frames_per_samp - 1
 
+def log(*text):
+    print(*text)
+    with open(join(args.log_dir, 'log.txt'), 'a') as f:
+        f.write(' '.join([str(x) for x in text]) + '\n')
+
 def get_model_pred(obs_x_true, ro_x_true):
     if args.baseline:
         ro_x_pred = tf.reshape(ro_x_true, [-1, n_ro_frames, n_objects, state_size])
@@ -107,8 +112,18 @@ enc_corr = get_enc_corr(enc_pred, y_true)
 train_iter = 0
 summary = tf.summary.merge_all()
 
-new_folder = str(max([int(x) for x in os.listdir(args.log_dir)]) + 1)
-args.log_dir = join(args.log_dir, new_folder)
+saver = tf.train.Saver()
+if args.restore:
+    folder_ind = basename(os.path.dirname(args.restore))
+    log("Reloading:", folder_ind)
+else:
+    folder_ind = str(max([int(x) for x in os.listdir(args.log_dir)]) + 1)
+
+args.log_dir = join(args.log_dir, folder_ind)
+args.ckpt_dir = join(args.ckpt_dir, folder_ind)
+
+if not args.restore:
+    os.mkdir(args.log_dir)
 
 def run_epoch(sess, writer, train):
     global train_iter
@@ -153,29 +168,41 @@ def run_epoch(sess, writer, train):
             epoch_corr += res[4]
 
     if not train:
-        print("Enc Corr:", epoch_corr / num_batches)
+        log("Enc Corr:", epoch_corr / num_batches)
 
     return epoch_loss / num_batches, epoch_pos_loss / num_batches, epoch_aux_loss / num_batches
 
 def run():
     with tf.Session() as sess:
-        sess.run(tf.global_variables_initializer())
+        if args.restore:
+            saver.restore(sess, args.restore)
+            start_epoch = int(basename(args.restore.split('-')[-1]))
+            log("Start Epoch: ", start_epoch)
+        else:
+            start_epoch = 1
+            sess.run(tf.global_variables_initializer())
         train_writer = tf.summary.FileWriter(args.log_dir + '/train', sess.graph)
         test_writer = tf.summary.FileWriter(args.log_dir + '/test')
 
         print("Training")
-
-        for epoch in range(1, args.epochs+1):
+    
+        best_loss = None
+        for epoch in range(start_epoch, args.epochs+1):
             start_time = time.time()
             loss_, pos_loss_, aux_loss_ = run_epoch(sess, train_writer, train=True)
-            print('Log: {} Discount Factor: {}'.format(
-                basename(args.log_dir), get_discount_factor()))
-            print('TRAIN: Epoch: {} Total Loss: {:.6E} Pos Loss: {:.6E} Aux Loss: {:.6E} Time: {:.2f}s'.format(
+            log('Log: {} Discount Factor: {}'.format(
+                folder_ind, get_discount_factor()))
+            log('TRAIN: Epoch: {} Total Loss: {:.6E} Pos Loss: {:.6E} Aux Loss: {:.6E} Time: {:.2f}s'.format(
                 epoch, loss_, pos_loss_, aux_loss_, time.time() - start_time))
 
             loss_, pos_loss_, aux_loss_ = run_epoch(sess, test_writer, train=False)
-            print('TEST: Total Loss: {:.6E} Pos Loss: {:.6E} Aux Loss: {:.6E} \n'.format(loss_, pos_loss_, aux_loss_))
+            log('TEST: Total Loss: {:.6E} Pos Loss: {:.6E} Aux Loss: {:.6E} \n'.format(loss_, pos_loss_, aux_loss_))
+
+            if best_loss is None or pos_loss_ < best_loss or args.save_all:
+                best_loss = pos_loss_
+                saver.save(sess, join(args.ckpt_dir, 'model'), epoch)
 
 if __name__ == '__main__':
+    log("Arguments:", args)
     run()
 

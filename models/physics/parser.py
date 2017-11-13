@@ -27,6 +27,12 @@ parser.add_argument('--frames-per-samp', type=int, default=2,
 #                     help='Base log folder.')
 parser.add_argument('--log-dir', type=str, default=join(DATAROOT, 'logs/'),
                     help='Run-specific log directory.')
+parser.add_argument('--ckpt-dir', type=str, default=join(DATAROOT, 'ckpt/'),
+                    help='Checkpoint directory.')
+parser.add_argument('--restore', type=str,
+                    help='Restore a specific checkpoint.')
+parser.add_argument('--save-all', action='store_true',
+                    help='Save all epochs, rather than just the best ones.')
 # parser.add_argument('--continue-train', action="store_true",
 #                     help='Continue previous train.')
 # parser.add_argument('--render', action='store_true', help='Whether to render file.')
