@@ -30,6 +30,7 @@ def lstm_enc_net(enc_x, lstm_widths, dense_widths):
 
     multi_rnn_cell = MultiRNNCell([LSTMCell(width) for width in lstm_widths])
 
+    # trainable initial state
     tile_size = tf.concat([tf.shape(h)[1:2], tf.constant([1], dtype=tf.int32)], axis=0)
     initial_state = tuple([LSTMStateTuple(*[tf.tile(tf.get_variable(
                 "initial_state_"+str(i)+'_'+str(j),

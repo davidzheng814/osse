@@ -25,7 +25,9 @@ def relation_net(x, code_size):
     assert int(x_pair.get_shape()[2]) == 2*code_size
 
     h = tf.reshape(x_pair, [-1, 2*code_size])
-    h = mlp(h, [code_size, code_size, code_size])
+
+    with tf.variable_scope("mlp"):
+        h = mlp(h, [code_size, code_size, code_size])
 
     h = tf.reshape(h, [-1, n_objects-1, n_objects, code_size])
     h = tf.reduce_sum(h, axis=1)
@@ -96,33 +98,32 @@ def predict_net(x0, enc, frames_per_samp, code_size, n_ro_frames, offsets):
 
     x0 = tf.unstack(x0, axis=1)
     x0 = [tf.reshape(state, [-1, state_size]) for state in x0]
+    n_prep_frames = len(x0)
 
     codes = [None for _ in range(frames_per_samp-1)]
     aux_losses = []
-    for i in range(len(x0)-frames_per_samp+1):
-        frame_ind = i + frames_per_samp - 1
-        full_state = tf.concat(x0[i:i+frames_per_samp]+[enc], axis=1,
+    for frame_ind in range(frames_per_samp-1, n_prep_frames):
+        full_state = tf.concat(x0[frame_ind-frames_per_samp+1:frame_ind+1]+[enc], axis=1,
                 name="full_state_"+str(frame_ind))
 
-        with tf.variable_scope("state_to_code", reuse=(i != 0)):
+        with tf.variable_scope("state_to_code", reuse=(frame_ind != frames_per_samp-1)):
             code = mlp(full_state, [code_size])
 
         codes.append(code)
 
-        with tf.variable_scope("code_to_state", reuse=(i != 0)):
+        with tf.variable_scope("code_to_state", reuse=(frame_ind != frames_per_samp-1)):
             aux_state = mlp(code, [state_size])
 
-        true_state = x0[i+frames_per_samp-1]
+        true_state = x0[frame_ind]
         aux_losses.append(tf.reduce_mean(tf.squared_difference(true_state, aux_state)))
 
     aux_loss = tf.reduce_mean(tf.stack(aux_losses))
 
     states = [state for state in x0]
-    for i in range(n_ro_frames - len(x0)):
-        frame_ind = i + len(x0) # frame_ind = timestep to predict.
+    for frame_ind in range(n_prep_frames, n_ro_frames):
         cur_inp = [codes[frame_ind-offset] for offset in offsets]
 
-        with tf.variable_scope("pred_net_cell", reuse=(i != 0)):
+        with tf.variable_scope("pred_net_cell", reuse=(frame_ind != n_prep_frames)):
             pred_code = predict_net_cell(cur_inp, len(offsets), n_objects, code_size, state_size)
 
         with tf.variable_scope("code_to_state", reuse=True):
