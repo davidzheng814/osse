@@ -83,8 +83,10 @@ def get_loss_and_optim(ro_x_pred, ro_x_true, ro_aux_loss, discount):
 def get_enc_corr(enc_pred, y_true):
     mean, var = tf.nn.moments(enc_pred, axes=[0], keep_dims=True)
     enc_pred_std = (enc_pred - mean) / tf.sqrt(var)
-    mean, var = tf.nn.moments(y_true, axes=[0], keep_dims=True)
-    y_true_std = tf.expand_dims((y_true - mean) / tf.sqrt(var), axis=2)
+
+    logy = tf.log(y_true)
+    mean, var = tf.nn.moments(logy, axes=[0], keep_dims=True)
+    y_true_std = tf.expand_dims((logy - mean) / tf.sqrt(var), axis=2)
 
     enc_corr = tf.reduce_max(tf.abs(tf.reduce_mean(enc_pred_std * y_true_std, axis=0)), axis=1)
 
@@ -115,14 +117,15 @@ summary = tf.summary.merge_all()
 saver = tf.train.Saver()
 if args.restore:
     folder_ind = basename(os.path.dirname(args.restore))
-    log("Reloading:", folder_ind)
 else:
     folder_ind = str(max([int(x) for x in os.listdir(args.log_dir)]) + 1)
 
 args.log_dir = join(args.log_dir, folder_ind)
 args.ckpt_dir = join(args.ckpt_dir, folder_ind)
 
-if not args.restore:
+if args.restore:
+    log("Reloading:", folder_ind)
+else:
     os.mkdir(args.log_dir)
 
 def run_epoch(sess, writer, train):
@@ -176,7 +179,9 @@ def run():
     with tf.Session() as sess:
         if args.restore:
             saver.restore(sess, args.restore)
-            start_epoch = int(basename(args.restore.split('-')[-1]))
+            start_epoch = int(basename(args.restore.split('-')[-1])) + 1
+            global train_iter
+            train_iter = start_epoch * len(train_set) // args.batch_size
             log("Start Epoch: ", start_epoch)
         else:
             start_epoch = 1
@@ -187,11 +192,12 @@ def run():
         print("Training")
     
         best_loss = None
+        best_epoch = start_epoch - 1
         for epoch in range(start_epoch, args.epochs+1):
             start_time = time.time()
+            log('Log: {} Discount Factor: {} Epochs w/o dec: {}'.format(
+                folder_ind, get_discount_factor(), epoch-best_epoch-1))
             loss_, pos_loss_, aux_loss_ = run_epoch(sess, train_writer, train=True)
-            log('Log: {} Discount Factor: {}'.format(
-                folder_ind, get_discount_factor()))
             log('TRAIN: Epoch: {} Total Loss: {:.6E} Pos Loss: {:.6E} Aux Loss: {:.6E} Time: {:.2f}s'.format(
                 epoch, loss_, pos_loss_, aux_loss_, time.time() - start_time))
 
@@ -200,6 +206,7 @@ def run():
 
             if best_loss is None or pos_loss_ < best_loss or args.save_all:
                 best_loss = pos_loss_
+                best_epoch = epoch
                 saver.save(sess, join(args.ckpt_dir, 'model'), epoch)
 
 if __name__ == '__main__':
