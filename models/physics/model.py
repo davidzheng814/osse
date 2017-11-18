@@ -9,6 +9,7 @@ from os.path import basename, join
 
 import tensorflow as tf
 import numpy as np
+from sklearn.linear_model import LinearRegression
 
 from enc_model import lstm_enc_net
 from pred_model import predict_net
@@ -59,7 +60,7 @@ def get_model_pred(obs_x_true, ro_x_true):
 
     return enc_pred, ro_x_pred, ro_aux_loss
 
-def get_loss_and_optim(ro_x_pred, ro_x_true, ro_aux_loss, discount):
+def get_loss_and_optim(ro_x_pred, ro_x_true, ro_aux_loss, discount, lr_enc, lr_pred):
     with tf.variable_scope("losses"):
         discount = tf.reshape(discount, [-1, 1, 1]) # For broadcasting purposes. 
         ro_x_true = tf.reshape(ro_x_true, [-1, n_ro_frames, n_objects, state_size])
@@ -76,27 +77,59 @@ def get_loss_and_optim(ro_x_pred, ro_x_true, ro_aux_loss, discount):
         return loss, pos_loss, None
 
     with tf.variable_scope("optim"):
-        optim = tf.train.AdamOptimizer(learning_rate=args.lr).minimize(loss)
+        enc_optim = (tf.train.AdamOptimizer(learning_rate=lr_enc)
+            .minimize(loss, var_list=[v for v in tf.trainable_variables()
+                                      if 'enc_net' in v.name]))
+        pred_optim = (tf.train.AdamOptimizer(learning_rate=lr_pred)
+            .minimize(loss, var_list=[v for v in tf.trainable_variables()
+                                      if 'predict_net' in v.name]))
+
+        optim = tf.group(enc_optim, pred_optim, name='optim')
     
     return loss, pos_loss, optim
 
-def get_enc_corr(enc_pred, y_true):
-    mean, var = tf.nn.moments(enc_pred, axes=[0], keep_dims=True)
-    enc_pred_std = (enc_pred - mean) / tf.sqrt(var)
+def enc_analysis(enc_pred, y_true):
+    '''
+        @param: enc_pred - [batch_size, n_objects, enc_size]
+        @param: y_true - [batch_size, n_objects]
+    '''
 
-    logy = tf.log(y_true)
-    mean, var = tf.nn.moments(logy, axes=[0], keep_dims=True)
-    y_true_std = tf.expand_dims((logy - mean) / tf.sqrt(var), axis=2)
+    r2s = []
+    for obj_ind in range(enc_pred.shape[1]):
+        X = enc_pred[:,obj_ind]
+        y = y_true[:,obj_ind]
 
-    enc_corr = tf.reduce_max(tf.abs(tf.reduce_mean(enc_pred_std * y_true_std, axis=0)), axis=1)
+        if args.logy:
+            y = np.log(y)
 
-    return enc_corr
+        model = LinearRegression()
+        model.fit(X, y)
+        r2 = model.score(X, y)
+        r2s.append(r2)
+
+    # mean = np.mean(enc_pred, axis=0, keepdims=True)
+    # std = np.std(enc_pred, axis=0, keepdims=True)
+    # enc_pred_std = (enc_pred - mean) / std
+
+    # logy = np.log(y_true)
+    # mean = np.mean(logy, axis=0, keepdims=True)
+    # std = np.std(logy, axis=0, keepdims=True)
+    # y_true_std = np.expand_dims((logy - mean) / std, axis=2)
+
+    # enc_corr = np.max(np.abs(np.mean(enc_pred_std * y_true_std, axis=0)), axis=1)
+
+    return r2s
 
 def get_discount_factor():
     if args.beta:
         epochs = (train_iter+1) * args.batch_size / len(train_set)
         return 1 - math.e ** (-epochs / args.beta)
     return 1.
+
+def get_learning_rates():
+    if args.freeze_encs:
+        return 0, args.lr_pred
+    return args.lr_enc, args.lr_pred
 
 print("Building Model")
 
@@ -106,15 +139,16 @@ ro_x_true = tf.placeholder(tf.float32, [None, n_rollouts, n_ro_frames, n_objects
         name="ro_x_true")
 y_true = tf.placeholder(tf.float32, [None, n_objects], name="y_true")
 discount = tf.placeholder(tf.float32, [n_ro_frames], name="discount")
+lr_enc = tf.placeholder(tf.float32, [], name="lr_enc")
+lr_pred = tf.placeholder(tf.float32, [], name="lr_pred")
 
 enc_pred, ro_x_pred, ro_aux_loss = get_model_pred(obs_x_true, ro_x_true)
-loss, pos_loss, optim = get_loss_and_optim(ro_x_pred, ro_x_true, ro_aux_loss, discount)
-enc_corr = get_enc_corr(enc_pred, y_true)
+loss, pos_loss, optim = get_loss_and_optim(ro_x_pred, ro_x_true, ro_aux_loss, discount, lr_enc, lr_pred)
 
 train_iter = 0
 summary = tf.summary.merge_all()
 
-saver = tf.train.Saver()
+saver = tf.train.Saver(var_list=tf.trainable_variables())
 if args.restore:
     folder_ind = basename(os.path.dirname(args.restore))
 else:
@@ -130,16 +164,19 @@ else:
 
 def run_epoch(sess, writer, train):
     global train_iter
-    epoch_loss, epoch_pos_loss, epoch_aux_loss, epoch_corr, num_batches = 0., 0., 0., 0., 0
+    epoch_loss, epoch_pos_loss, epoch_aux_loss, num_batches = 0., 0., 0., 0
     data_set = train_set if train else test_set
     out_ops = [loss, pos_loss, ro_aux_loss, summary]
     if train and not args.baseline:
         out_ops.append(optim)
     else:
-        out_ops.append(enc_corr)
+        if args.calc_encs:
+            out_ops.append(enc_pred)
+            y_trues, enc_preds = [], []
 
     for obs_x_true_, ro_x_true_, y_true_ in data_set.get_batches():
         discount_ = np.geomspace(1, get_discount_factor() ** n_ro_frames, num=n_ro_frames)
+        lr_enc_, lr_pred_ = get_learning_rates()
 
         kwargs = {}
         if args.runtime and train and train_iter % 100 == 0: # record runtime
@@ -154,6 +191,8 @@ def run_epoch(sess, writer, train):
             ro_x_true:ro_x_true_,
             discount:discount_,
             y_true:y_true_,
+            lr_enc:lr_enc_,
+            lr_pred:lr_pred_,
         }, **kwargs)
 
         if args.runtime and train and train_iter % 100 == 0:
@@ -167,16 +206,20 @@ def run_epoch(sess, writer, train):
 
         if train:
             train_iter += 1
-        else:
-            epoch_corr += res[4]
+        elif args.calc_encs:
+            y_trues.append(y_true_)
+            enc_preds.append(res[4])
 
-    if not train:
-        log("Enc Corr:", epoch_corr / num_batches)
+    if not train and args.calc_encs:
+        epoch_y_true = np.concatenate(y_trues, axis=0)
+        epoch_enc_pred = np.concatenate(enc_preds, axis=0)
+        log("Enc R^2:", enc_analysis(epoch_enc_pred, epoch_y_true))
 
     return epoch_loss / num_batches, epoch_pos_loss / num_batches, epoch_aux_loss / num_batches
 
 def run():
     with tf.Session() as sess:
+        sess.run(tf.global_variables_initializer())
         if args.restore:
             saver.restore(sess, args.restore)
             start_epoch = int(basename(args.restore.split('-')[-1])) + 1
@@ -185,12 +228,11 @@ def run():
             log("Start Epoch: ", start_epoch)
         else:
             start_epoch = 1
-            sess.run(tf.global_variables_initializer())
         train_writer = tf.summary.FileWriter(args.log_dir + '/train', sess.graph)
         test_writer = tf.summary.FileWriter(args.log_dir + '/test')
 
         print("Training")
-    
+
         best_loss = None
         best_epoch = start_epoch - 1
         for epoch in range(start_epoch, args.epochs+1):

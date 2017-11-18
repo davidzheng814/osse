@@ -47,8 +47,12 @@ parser.add_argument('--save-all', action='store_true',
 #                     help='Whether to use both enc net and pred net.')
 # parser.add_argument('--no-enc', action='store_true',
 #                     help='Whether to replace encoding with zeros.')
-parser.add_argument('--save-encs', action='store_true',
+parser.add_argument('--freeze-encs', action='store_true',
+                    help='Whether to freeze training of encodings.')
+parser.add_argument('--calc-encs', action='store_true',
                     help='Whether to save encodings.')
+parser.add_argument('--logy', action='store_true',
+                    help='Whether to regress on log(mass) or mass.')
 parser.add_argument('--runtime', action='store_true',
                     help='Whether to record runtimes.')
 parser.add_argument('--baseline', action='store_true',
@@ -60,16 +64,16 @@ parser.add_argument('--batch-size', type=int, default=1024,
                     help='batch size')
 parser.add_argument('--loss-fn', type=str, default='mse',
                     help='Loss function')
-parser.add_argument('--lr', type=float, default=5e-4,
-                    help='model learning rate')
+parser.add_argument('--lr-enc', type=float, default=5e-4,
+                    help='enc model learning rate')
+parser.add_argument('--lr-pred', type=float, default=5e-4,
+                    help='pred model learning rate')
 
 parser.add_argument('--enc-lstm-widths', type=int, default=[36, 36, 36, 36],
                     nargs='+', help='EncNet widths')
 parser.add_argument('--enc-dense-widths', type=int, default=[36, 36, 45],
                     nargs='+', help='TransNet widths')
 
-parser.add_argument('--lr-pred', type=float, default=5e-4,
-                    help='pred model learning rate')
 parser.add_argument('--code-size', type=int, default=64,
                     help='Size of code.')
 parser.add_argument('--ro-discount', help="")
