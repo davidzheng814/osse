@@ -31,6 +31,8 @@ parser.add_argument('--ckpt-dir', type=str, default=join(DATAROOT, 'ckpt/'),
                     help='Checkpoint directory.')
 parser.add_argument('--restore', type=str,
                     help='Restore a specific checkpoint.')
+parser.add_argument('--new-dir', action='store_true',
+                    help='Used with --restore: places results into a new directory.')
 parser.add_argument('--save-all', action='store_true',
                     help='Save all epochs, rather than just the best ones.')
 # parser.add_argument('--continue-train', action="store_true",

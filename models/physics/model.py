@@ -6,6 +6,7 @@ import time
 import math
 import os
 from os.path import basename, join
+import shutil
 
 import tensorflow as tf
 import numpy as np
@@ -150,7 +151,22 @@ summary = tf.summary.merge_all()
 
 saver = tf.train.Saver(var_list=tf.trainable_variables())
 if args.restore:
-    folder_ind = basename(os.path.dirname(args.restore))
+    if args.new_dir:
+        old_folder_ind = basename(os.path.dirname(args.restore))
+        folder_ind = str(max([int(x) for x in os.listdir(args.log_dir)]) + 1)
+        print("Copying {} to {}.".format(old_folder_ind, folder_ind))
+        try:
+            shutil.copytree(join(args.log_dir, old_folder_ind),
+                            join(args.log_dir, folder_ind))
+        except shutil.Error as e:
+            print("Shutil error but continuing: {}".format(e))
+        try:
+            shutil.copytree(join(args.ckpt_dir, old_folder_ind),
+                            join(args.ckpt_dir, folder_ind))
+        except shutil.Error as e:
+            print("Shutil error but continuing: {}".format(e))
+    else:
+        folder_ind = basename(os.path.dirname(args.restore))
 else:
     folder_ind = str(max([int(x) for x in os.listdir(args.log_dir)]) + 1)
 
