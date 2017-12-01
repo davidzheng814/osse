@@ -127,10 +127,12 @@ def get_discount_factor():
         return 1 - math.e ** (-epochs / args.beta)
     return 1.
 
+lr_params = { 'decay': 1.0 }
+
 def get_learning_rates():
     if args.freeze_encs:
-        return 0, args.lr_pred
-    return args.lr_enc, args.lr_pred
+        return 0, args.lr_pred * lr_params['decay']
+    return args.lr_enc * lr_params['decay'], args.lr_pred * lr_params['decay']
 
 print("Building Model")
 
@@ -255,6 +257,10 @@ def run():
             start_time = time.time()
             log('Log: {} Discount Factor: {} Epochs w/o dec: {}'.format(
                 folder_ind, get_discount_factor(), epoch-best_epoch-1))
+            if args.decay_cutoff != -1 and epoch-best_epoch-1 >= args.decay_cutoff:
+                lr_params['decay'] *= args.decay_factor
+                log('Decaying learning rates to: {}'.format(get_learning_rates()))
+                best_epoch = epoch
             loss_, pos_loss_, aux_loss_ = run_epoch(sess, train_writer, train=True)
             log('TRAIN: Epoch: {} Total Loss: {:.6E} Pos Loss: {:.6E} Aux Loss: {:.6E} Time: {:.2f}s'.format(
                 epoch, loss_, pos_loss_, aux_loss_, time.time() - start_time))

@@ -70,6 +70,11 @@ parser.add_argument('--lr-enc', type=float, default=5e-4,
                     help='enc model learning rate')
 parser.add_argument('--lr-pred', type=float, default=5e-4,
                     help='pred model learning rate')
+parser.add_argument('--decay-cutoff', type=int, default=-1,
+                    help='if loss does not improve for this number of epochs, both'
+                         'learning rates are decreased by factor --decay-factor')
+parser.add_argument('--decay-factor', type=float, default=0.5,
+                    help='ratio to cut learning rate by after --decay-cutoff reached')
 
 parser.add_argument('--enc-lstm-widths', type=int, default=[36, 36, 36, 36],
                     nargs='+', help='EncNet widths')
