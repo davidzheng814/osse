@@ -59,6 +59,8 @@ parser.add_argument('--runtime', action='store_true',
                     help='Whether to record runtimes.')
 parser.add_argument('--baseline', action='store_true',
                     help='Whether to calculate baseline loss.')
+parser.add_argument('--long', action='store_true',
+                    help='Whether to save a long rollout.')
 
 parser.add_argument('--epochs', type=int, default=500,
                     help='number of epochs')

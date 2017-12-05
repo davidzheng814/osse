@@ -4,6 +4,7 @@ print("Importing")
 
 import time
 import math
+import json
 import os
 from os.path import basename, join
 import shutil
@@ -22,12 +23,13 @@ args = parser.parse_args()
 print("Loading Datasets")
 
 train_set = PhysicsDataset(args.data_file, args.num_points, args.test_points, args.batch_size, train=True)
-test_set = PhysicsDataset(args.data_file, args.num_points, args.test_points, args.batch_size, train=False)
+test_set = PhysicsDataset(args.data_file, args.num_points, args.test_points, args.batch_size, train=False, maxes=train_set.maxes)
 
 n_obs_frames = train_set.n_obs_frames
 n_ro_frames = train_set.n_ro_frames
 n_objects = train_set.n_objects
 n_rollouts = train_set.n_rollouts
+n_ro_frames_long = test_set.n_ro_frames_long
 state_size = train_set.state_size
 y_size = train_set.y_size
 enc_size = args.enc_dense_widths[-1] // n_objects
@@ -38,24 +40,24 @@ def log(*text):
     with open(join(args.log_dir, 'log.txt'), 'a') as f:
         f.write(' '.join([str(x) for x in text]) + '\n')
 
-def get_model_pred(obs_x_true, ro_x_true):
+def get_model_pred(obs_x_true, ro_x_true, n_ro_frames, reuse=False):
     if args.baseline:
         ro_x_pred = tf.reshape(ro_x_true, [-1, n_ro_frames, n_objects, state_size])
         ro_x_pred = tf.concat(
                 [ro_x_pred[:,:n_prep_frames], ro_x_pred[:,n_prep_frames-1:-1]], axis=1)
 
-        return None, ro_x_pred
+        return None, ro_x_pred, tf.constant(0.)
 
-    with tf.variable_scope("enc_net"):
+    with tf.variable_scope("enc_net", reuse=reuse):
         enc_pred = lstm_enc_net(obs_x_true, args.enc_lstm_widths, args.enc_dense_widths)
         enc_pred_expand = tf.tile(tf.expand_dims(enc_pred, axis=1), [1, n_rollouts, 1, 1])
         enc_pred_expand = tf.reshape(enc_pred_expand, [-1, n_objects, enc_size])
 
-    with tf.variable_scope("preprocess_prednet"):
+    with tf.variable_scope("preprocess_prednet", reuse=reuse):
         init_ro_state = ro_x_true[:,:,:n_prep_frames]
         init_ro_state = tf.reshape(init_ro_state, [-1, n_prep_frames, n_objects, state_size])
 
-    with tf.variable_scope("predict_net"):
+    with tf.variable_scope("predict_net", reuse=reuse):
         ro_x_pred, ro_aux_loss = predict_net(init_ro_state, enc_pred_expand,
                 args.frames_per_samp, args.code_size, n_ro_frames, args.offsets)
 
@@ -90,10 +92,10 @@ def get_loss_and_optim(ro_x_pred, ro_x_true, ro_aux_loss, discount, lr_enc, lr_p
     return loss, pos_loss, optim
 
 def enc_analysis(enc_pred, y_true):
-    '''
-        @param: enc_pred - [batch_size, n_objects, enc_size]
-        @param: y_true - [batch_size, n_objects]
-    '''
+    """
+        @param enc_pred: [batch_size, n_objects, enc_size]
+        @param y_true: [batch_size, n_objects]
+    """
 
     r2s = []
     for obj_ind in range(enc_pred.shape[1]):
@@ -121,6 +123,31 @@ def enc_analysis(enc_pred, y_true):
 
     return r2s
 
+def get_states_json(states):
+    payload = []
+    for frame in states:
+        pos, vel = [], []
+        for obj in frame:
+            obj = obj.tolist()
+            pos.append({'x':obj[0], 'y':obj[1]})
+            vel.append({'x':obj[2], 'y':obj[3]})
+        payload.append({'pos':pos, 'vel':vel})
+    return payload 
+
+def save_json(x_true, x_pred, y_true, out_file):
+    """Write states to json file.
+        @param x_true: [n_ro_frames_long, n_objects, state_size]
+        @param x_pred: [n_ro_frames_long, n_objects, state_size]
+        @param y_true: [n_objects]
+    """
+    payload = {
+        'states': get_states_json(x_pred),
+        'true_states': get_states_json(x_true),
+        'enc_true': y_true.tolist()
+    }
+    with open(out_file, 'w') as f:
+        f.write(json.dumps(payload, indent=4, separators=(',',': ')))
+
 def get_discount_factor():
     if args.beta:
         epochs = (train_iter+1) * args.batch_size / len(train_set)
@@ -145,13 +172,21 @@ discount = tf.placeholder(tf.float32, [n_ro_frames], name="discount")
 lr_enc = tf.placeholder(tf.float32, [], name="lr_enc")
 lr_pred = tf.placeholder(tf.float32, [], name="lr_pred")
 
-enc_pred, ro_x_pred, ro_aux_loss = get_model_pred(obs_x_true, ro_x_true)
+enc_pred, ro_x_pred, ro_aux_loss = get_model_pred(obs_x_true, ro_x_true, n_ro_frames)
 loss, pos_loss, optim = get_loss_and_optim(ro_x_pred, ro_x_true, ro_aux_loss, discount, lr_enc, lr_pred)
+
+if args.long:
+    ro_x_true_long = tf.placeholder(tf.float32, 
+        [None, n_rollouts, n_ro_frames_long, n_objects, state_size],
+        name="ro_x_true_long")
+    enc_pred_long, ro_x_pred_long, _ = get_model_pred(obs_x_true, ro_x_true_long, n_ro_frames_long, reuse=True)
 
 train_iter = 0
 summary = tf.summary.merge_all()
 
-saver = tf.train.Saver(var_list=tf.trainable_variables())
+if not args.baseline:
+    saver = tf.train.Saver(var_list=tf.trainable_variables())
+
 if args.restore:
     if args.new_dir:
         old_folder_ind = basename(os.path.dirname(args.restore))
@@ -228,12 +263,31 @@ def run_epoch(sess, writer, train):
             y_trues.append(y_true_)
             enc_preds.append(res[4])
 
-    if not train and args.calc_encs:
+    if not train and args.calc_encs: # Encoding analysis
         epoch_y_true = np.concatenate(y_trues, axis=0)
         epoch_enc_pred = np.concatenate(enc_preds, axis=0)
         log("Enc R^2:", enc_analysis(epoch_enc_pred, epoch_y_true))
+        np.savez(join(args.log_dir, 'enc.npz'), enc=epoch_enc_pred, y=epoch_y_true)
 
     return epoch_loss / num_batches, epoch_pos_loss / num_batches, epoch_aux_loss / num_batches
+
+def run_long_rollouts(sess):
+    obs_x_true_long_, ro_x_true_long_, y_true_long_ = test_set.get_long_batch()
+    ro_x_pred_long_ = sess.run(ro_x_pred_long, feed_dict={
+        obs_x_true:obs_x_true_long_,
+        ro_x_true_long:ro_x_true_long_,
+    })
+    ro_x_true_long_ = np.reshape(ro_x_true_long_,
+            [-1, n_ro_frames_long, n_objects, state_size])
+    y_true_long_ = np.reshape(np.tile(y_true_long_, [1, n_rollouts]),
+            [-1, n_objects])
+
+    ro_x_true_long_ *= train_set.maxes['state']
+    y_true_long_ *= train_set.maxes['y']
+    for samp_ind in range(len(ro_x_true_long_)):
+        save_json(ro_x_true_long_[samp_ind], ro_x_pred_long_[samp_ind],
+                y_true_long_[samp_ind],
+                join(args.log_dir, 'long_ro_'+str(samp_ind)+'.json'))
 
 def run():
     with tf.Session() as sess:
@@ -261,12 +315,17 @@ def run():
                 lr_params['decay'] *= args.decay_factor
                 log('Decaying learning rates to: {}'.format(get_learning_rates()))
                 best_epoch = epoch
+            if args.long:
+                run_long_rollouts(sess)
             loss_, pos_loss_, aux_loss_ = run_epoch(sess, train_writer, train=True)
             log('TRAIN: Epoch: {} Total Loss: {:.6E} Pos Loss: {:.6E} Aux Loss: {:.6E} Time: {:.2f}s'.format(
                 epoch, loss_, pos_loss_, aux_loss_, time.time() - start_time))
 
             loss_, pos_loss_, aux_loss_ = run_epoch(sess, test_writer, train=False)
             log('TEST: Total Loss: {:.6E} Pos Loss: {:.6E} Aux Loss: {:.6E} \n'.format(loss_, pos_loss_, aux_loss_))
+
+            if args.baseline:
+                break
 
             if best_loss is None or pos_loss_ < best_loss or args.save_all:
                 best_loss = pos_loss_
