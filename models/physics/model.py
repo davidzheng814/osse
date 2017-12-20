@@ -57,7 +57,8 @@ def get_model_pred(obs_x_true, ro_x_true):
 
     with tf.variable_scope("predict_net"):
         ro_x_pred, ro_aux_loss = predict_net(init_ro_state, enc_pred_expand,
-                args.frames_per_samp, args.code_size, n_ro_frames, args.offsets)
+                args.frames_per_samp, args.code_size, n_ro_frames, args.offsets,
+                args.noise)
 
     return enc_pred, ro_x_pred, ro_aux_loss
 
