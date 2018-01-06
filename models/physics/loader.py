@@ -40,6 +40,10 @@ class PhysicsDataset(object):
         self.obs_x_true /= self.maxes['state']
         self.ro_x_true /= self.maxes['state']
         self.y_true /= self.maxes['y']
+        if not train:
+            self.obs_x_true_long /= self.maxes['state']
+            self.ro_x_true_long /= self.maxes['state']
+            self.y_true_long /= self.maxes['y']
 
         if len(self.y_true.shape) == 3:
             self.y_true = np.stack(

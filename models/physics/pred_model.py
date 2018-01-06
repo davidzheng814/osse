@@ -127,6 +127,7 @@ def predict_net(x0, enc, frames_per_samp, code_size, n_ro_frames, offsets,
     states = [state for state in x0]
     state_mean, state_var = tf.nn.moments(orig_x0, [0, 1, 2])
     state_std = tf.unstack(tf.sqrt(state_var))
+    # state_std = tf.Print(state_std, [state_std], message="stds:")
     for frame_ind in range(n_prep_frames, n_ro_frames):
         cur_inp = [codes[frame_ind-offset] for offset in offsets]
 
@@ -136,8 +137,9 @@ def predict_net(x0, enc, frames_per_samp, code_size, n_ro_frames, offsets,
         with tf.variable_scope("code_to_state", reuse=True):
             pred_state = mlp(pred_code, [state_size])
             noise = [tf.random_normal(shape=tf.shape(pred_state)[:-1], mean=0.0,
-                stddev=element_std) for element_std in state_std]
+                stddev=noise_ratio * element_std) for element_std in state_std]
             noise = tf.stack(noise, axis=1)
+            # noise = tf.Print(noise, [noise], message="noise:")
             pred_state += noise
             states.append(pred_state)
             full_state = tf.concat(states[-frames_per_samp:]+[enc], axis=1)

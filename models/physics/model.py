@@ -142,7 +142,7 @@ def save_json(x_true, x_pred, y_true, out_file):
         @param y_true: [n_objects]
     """
     payload = {
-        'states': get_states_json(x_pred),
+        'ro_states': [get_states_json(x_pred)],
         'true_states': get_states_json(x_true),
         'enc_true': y_true.tolist()
     }
@@ -284,6 +284,7 @@ def run_long_rollouts(sess):
             [-1, n_objects])
 
     ro_x_true_long_ *= train_set.maxes['state']
+    ro_x_pred_long_ *= train_set.maxes['state']
     y_true_long_ *= train_set.maxes['y']
     for samp_ind in range(len(ro_x_true_long_)):
         save_json(ro_x_true_long_[samp_ind], ro_x_pred_long_[samp_ind],
