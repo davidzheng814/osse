@@ -14,6 +14,7 @@ import numpy as np
 from sklearn.linear_model import LinearRegression
 
 from enc_model import lstm_enc_net
+from inet_enc_model import inet_enc_net
 from pred_model import predict_net
 from parser import parser
 from loader import PhysicsDataset
@@ -35,6 +36,9 @@ y_size = train_set.y_size
 enc_size = args.enc_dense_widths[-1] // n_objects
 n_prep_frames = max(args.offsets) + args.frames_per_samp - 1
 
+if args.enc_only:
+    assert enc_size == y_size
+
 def log(*text):
     print(*text)
     with open(join(args.log_dir, 'log.txt'), 'a') as f:
@@ -49,7 +53,11 @@ def get_model_pred(obs_x_true, ro_x_true, n_ro_frames, reuse=False):
         return None, ro_x_pred, tf.constant(0.)
 
     with tf.variable_scope("enc_net", reuse=reuse):
-        enc_pred = lstm_enc_net(obs_x_true, args.enc_lstm_widths, args.enc_dense_widths)
+        enc_pred = inet_enc_net(obs_x_true, args.enc_lstm_widths, args.enc_dense_widths)
+
+        if args.enc_only:
+            return enc_pred
+
         enc_pred_expand = tf.tile(tf.expand_dims(enc_pred, axis=1), [1, n_rollouts, 1, 1])
         enc_pred_expand = tf.reshape(enc_pred_expand, [-1, n_objects, enc_size])
 
@@ -63,6 +71,19 @@ def get_model_pred(obs_x_true, ro_x_true, n_ro_frames, reuse=False):
 
     return enc_pred, ro_x_pred, ro_aux_loss
 
+def get_enc_loss_and_optim(enc_pred, y_true, lr_enc):
+    with tf.variable_scope("enc_losses"):
+        enc_pred = tf.reshape(enc_pred, [-1, n_objects])
+        loss = tf.reduce_mean(tf.squared_difference(enc_pred, y_true))
+        tf.summary.scalar('enc_loss', loss)
+
+    with tf.variable_scope("enc_optim"):
+        optim = (tf.train.AdamOptimizer(learning_rate=lr_enc)
+            .minimize(loss, var_list=[v for v in tf.trainable_variables()
+                                      if 'enc_net' in v.name]))
+
+    return loss, optim
+
 def get_loss_and_optim(ro_x_pred, ro_x_true, ro_aux_loss, discount, lr_enc, lr_pred):
     with tf.variable_scope("losses"):
         discount = tf.reshape(discount, [-1, 1, 1]) # For broadcasting purposes. 
@@ -70,14 +91,17 @@ def get_loss_and_optim(ro_x_pred, ro_x_true, ro_aux_loss, discount, lr_enc, lr_p
         loss_tensor = tf.squared_difference(ro_x_true, ro_x_pred)
 
         loss = tf.reduce_mean(discount * loss_tensor, name="loss") + ro_aux_loss
-        pos_loss = tf.reduce_mean(loss_tensor[:,n_prep_frames:,:,:2], name="pos_loss")
+        pos_loss_tensor = loss_tensor[:,n_prep_frames:,:,:2]
+        pos_loss = tf.reduce_mean(pos_loss_tensor, name="pos_loss")
+        pos_loss_adjust = tf.reduce_mean(tf.multiply(pos_loss_tensor, np.square(train_set.maxes['state'][:2])))
 
         tf.summary.scalar('aux_loss', ro_aux_loss)
         tf.summary.scalar('loss', loss)
         tf.summary.scalar('pos_loss', pos_loss)
+        tf.summary.scalar('pos_loss_adjust', pos_loss_adjust)
 
     if args.baseline:
-        return loss, pos_loss, None
+        return loss, pos_loss_adjust, None
 
     with tf.variable_scope("optim"):
         enc_optim = (tf.train.AdamOptimizer(learning_rate=lr_enc)
@@ -89,7 +113,7 @@ def get_loss_and_optim(ro_x_pred, ro_x_true, ro_aux_loss, discount, lr_enc, lr_p
 
         optim = tf.group(enc_optim, pred_optim, name='optim')
     
-    return loss, pos_loss, optim
+    return loss, pos_loss_adjust, optim
 
 def enc_analysis(enc_pred, y_true):
     """
@@ -172,8 +196,12 @@ discount = tf.placeholder(tf.float32, [n_ro_frames], name="discount")
 lr_enc = tf.placeholder(tf.float32, [], name="lr_enc")
 lr_pred = tf.placeholder(tf.float32, [], name="lr_pred")
 
-enc_pred, ro_x_pred, ro_aux_loss = get_model_pred(obs_x_true, ro_x_true, n_ro_frames)
-loss, pos_loss, optim = get_loss_and_optim(ro_x_pred, ro_x_true, ro_aux_loss, discount, lr_enc, lr_pred)
+if args.enc_only:
+    enc_pred = get_model_pred(obs_x_true, ro_x_true, n_ro_frames)
+    loss, optim = get_enc_loss_and_optim(enc_pred, y_true, lr_enc)
+else:
+    enc_pred, ro_x_pred, ro_aux_loss = get_model_pred(obs_x_true, ro_x_true, n_ro_frames)
+    loss, pos_loss, optim = get_loss_and_optim(ro_x_pred, ro_x_true, ro_aux_loss, discount, lr_enc, lr_pred)
 
 if args.long:
     ro_x_true_long = tf.placeholder(tf.float32, 
@@ -219,7 +247,10 @@ def run_epoch(sess, writer, train):
     global train_iter
     epoch_loss, epoch_pos_loss, epoch_aux_loss, num_batches = 0., 0., 0., 0
     data_set = train_set if train else test_set
-    out_ops = [loss, pos_loss, ro_aux_loss, summary]
+    if args.enc_only:
+        out_ops = [loss, summary]
+    else:
+        out_ops = [loss, pos_loss, ro_aux_loss, summary]
     if train and not args.baseline:
         out_ops.append(optim)
     else:
@@ -253,15 +284,18 @@ def run_epoch(sess, writer, train):
 
         num_batches += 1
         epoch_loss += res[0]
-        epoch_pos_loss += res[1]
-        epoch_aux_loss += res[2]
-        writer.add_summary(res[3], train_iter)
+        if args.enc_only:
+            writer.add_summary(res[1], train_iter)
+        else:
+            epoch_pos_loss += res[1]
+            epoch_aux_loss += res[2]
+            writer.add_summary(res[3], train_iter)
 
         if train:
             train_iter += 1
         elif args.calc_encs:
             y_trues.append(y_true_)
-            enc_preds.append(res[4])
+            enc_preds.append(res[2] if args.enc_only else res[4])
 
     if not train and args.calc_encs: # Encoding analysis
         epoch_y_true = np.concatenate(y_trues, axis=0)

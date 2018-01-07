@@ -41,8 +41,8 @@ parser.add_argument('--save-all', action='store_true',
 
 """"" HYPERPARAMETERS """""
 
-# parser.add_argument('--enc', action='store_true',
-#                     help='Whether to use EncNet.')
+parser.add_argument('--enc-only', action='store_true',
+                    help='Whether to use EncNet only.')
 # parser.add_argument('--pred', action='store_true',
 #                     help='Whether to use PredNet.')
 # parser.add_argument('--all', action='store_true',

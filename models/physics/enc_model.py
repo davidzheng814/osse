@@ -1,14 +1,14 @@
 from __future__ import print_function, division
 
 import tensorflow as tf
-from tensorflow.contrib.rnn import LSTMCell, MultiRNNCell, LSTMStateTuple
+from tensorflow.contrib.rnn import GRUCell, MultiRNNCell
 
-from shared import mlp
+from shared import mlp, dense
 
 def lstm_enc_net(enc_x, lstm_widths, dense_widths):
-    """Computes an encoding vector using stacked LSTMs.
+    """Computes an encoding vector using stacked GRUs.
     @param enc_x: the input tensor of shape [batch_size, n_obs_frames, n_objects, state_size]
-    @param lstm_widths: list of hidden layer widths in LSTM.
+    @param lstm_widths: list of hidden layer widths in GRU.
     @param dense_widths: list of hidden layer widths in dense layer.
     
     Final enc_size per object will be dense_widths[-1] // n_objects
@@ -28,30 +28,31 @@ def lstm_enc_net(enc_x, lstm_widths, dense_widths):
     hs.append(h[n_enc_window-1:])
     h = tf.concat(hs, axis=2)
 
-    multi_rnn_cell = MultiRNNCell([LSTMCell(width) for width in lstm_widths])
+    multi_rnn_cell = MultiRNNCell([GRUCell(width) for width in lstm_widths])
 
     # trainable initial state
     tile_size = tf.concat([tf.shape(h)[1:2], tf.constant([1], dtype=tf.int32)], axis=0)
-    initial_state = tuple([LSTMStateTuple(*[tf.tile(tf.get_variable(
-                "initial_state_"+str(i)+'_'+str(j),
-                shape=(1,width),
-                initializer=tf.zeros_initializer()
-                ), tile_size)
-            for j, width in enumerate(state_size)])
-        for i, state_size in enumerate(multi_rnn_cell.state_size)])
+    # initial_state = tuple([GRUStateTuple(*[tf.tile(tf.get_variable(
+    #             "initial_state_"+str(i)+'_'+str(j),
+    #             shape=(1,width),
+    #             initializer=tf.zeros_initializer()
+    #             ), tile_size)
+    #         for j, width in enumerate(state_size)])
+    #     for i, state_size in enumerate(multi_rnn_cell.state_size)])
 
     h, state = tf.nn.dynamic_rnn(
             cell=multi_rnn_cell,
             time_major=True,
-            initial_state=initial_state,
+            # initial_state=initial_state,
             inputs=h,
             scope="lstms",
             dtype=tf.float32)
 
     enc = h[-1] # Shape of [batch_size, lstm_widths[-1]]
 
+    enc = tf.reshape(enc, [-1, lstm_widths[-1] // n_objects])
     with tf.variable_scope("mlp"):
-        enc = mlp(enc, dense_widths)
+        enc = mlp(enc, [x // n_objects for x in dense_widths])
 
     enc = tf.reshape(enc, [-1, n_objects, dense_widths[-1] // n_objects])
 
