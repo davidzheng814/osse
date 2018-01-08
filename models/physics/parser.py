@@ -86,7 +86,7 @@ parser.add_argument('--enc-dense-widths', type=int, default=[36, 36, 45],
 parser.add_argument('--code-size', type=int, default=64,
                     help='Size of code.')
 parser.add_argument('--ro-discount', help="")
-parser.add_argument('--noise', type=float, help="specify standard deviation of noise.")
+parser.add_argument('--noise', type=float, default=0, help="specify standard deviation of noise (as ratio of standard deviation of state elements).")
 # parser.add_argument('--alpha', type=float, default=6e5,
 #                     help='pred model learning rate alpha decay')
 parser.add_argument('--offsets', type=int, default=[1, 2, 4],

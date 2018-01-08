@@ -67,7 +67,8 @@ def get_model_pred(obs_x_true, ro_x_true, n_ro_frames, reuse=False):
 
     with tf.variable_scope("predict_net", reuse=reuse):
         ro_x_pred, ro_aux_loss = predict_net(init_ro_state, enc_pred_expand,
-                args.frames_per_samp, args.code_size, n_ro_frames, args.offsets)
+                args.frames_per_samp, args.code_size, n_ro_frames, args.offsets,
+                args.noise)
 
     return enc_pred, ro_x_pred, ro_aux_loss
 
@@ -165,7 +166,7 @@ def save_json(x_true, x_pred, y_true, out_file):
         @param y_true: [n_objects]
     """
     payload = {
-        'states': get_states_json(x_pred),
+        'ro_states': [get_states_json(x_pred)],
         'true_states': get_states_json(x_true),
         'enc_true': y_true.tolist()
     }
@@ -317,6 +318,7 @@ def run_long_rollouts(sess):
             [-1, n_objects])
 
     ro_x_true_long_ *= train_set.maxes['state']
+    ro_x_pred_long_ *= train_set.maxes['state']
     y_true_long_ *= train_set.maxes['y']
     for samp_ind in range(len(ro_x_true_long_)):
         save_json(ro_x_true_long_[samp_ind], ro_x_pred_long_[samp_ind],

@@ -82,11 +82,15 @@ def predict_net_cell(x, n_offsets, n_objects, code_size, state_size):
 
     return h
 
-def predict_net(x0, enc, frames_per_samp, code_size, n_ro_frames, offsets):
+def predict_net(x0, enc, frames_per_samp, code_size, n_ro_frames, offsets,
+        noise_ratio=0.0):
     """Returns list of n_ro_frames future object states from an initial object state.
    
     @param x0 - initial state tensor of shape [batch_size, n_prep_frames, n_objects, state_size]
     @param enc - encoding tensor of shape [batch_size, n_objects, enc_size]
+    @param noise_ratio - the amount of white noise to add to states during rollout.
+        The noise is distributed in a gaussian with standard deviation equal to
+        noise_ratio * batch_std(states)
     
     """
 
@@ -96,6 +100,7 @@ def predict_net(x0, enc, frames_per_samp, code_size, n_ro_frames, offsets):
 
     enc = tf.reshape(enc, [-1, enc_size])
 
+    orig_x0 = x0
     x0 = tf.unstack(x0, axis=1)
     x0 = [tf.reshape(state, [-1, state_size]) for state in x0]
     n_prep_frames = len(x0)
@@ -120,6 +125,9 @@ def predict_net(x0, enc, frames_per_samp, code_size, n_ro_frames, offsets):
     aux_loss = tf.reduce_mean(tf.stack(aux_losses))
 
     states = [state for state in x0]
+    state_mean, state_var = tf.nn.moments(orig_x0, [0, 1, 2])
+    state_std = tf.unstack(tf.sqrt(state_var))
+    # state_std = tf.Print(state_std, [state_std], message="stds:")
     for frame_ind in range(n_prep_frames, n_ro_frames):
         cur_inp = [codes[frame_ind-offset] for offset in offsets]
 
@@ -128,6 +136,11 @@ def predict_net(x0, enc, frames_per_samp, code_size, n_ro_frames, offsets):
 
         with tf.variable_scope("code_to_state", reuse=True):
             pred_state = mlp(pred_code, [state_size])
+            noise = [tf.random_normal(shape=tf.shape(pred_state)[:-1], mean=0.0,
+                stddev=noise_ratio * element_std) for element_std in state_std]
+            noise = tf.stack(noise, axis=1)
+            # noise = tf.Print(noise, [noise], message="noise:")
+            pred_state += noise
             states.append(pred_state)
             full_state = tf.concat(states[-frames_per_samp:]+[enc], axis=1)
 
