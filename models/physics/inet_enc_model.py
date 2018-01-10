@@ -168,9 +168,9 @@ def inet_enc_net(enc_x, lstm_widths, dense_widths):
     state_size = int(enc_x.get_shape()[3])
 
     h = tf.transpose(enc_x, [1, 0, 2, 3])
-    h = tf.reshape(h, [n_obs_frames, -1, n_objects * state_size])
+    h = tf.reshape(h, [n_obs_frames, -1, state_size])
 
-    multi_rnn_cell = MultiRNNCell([SymGRUCell(width) for width in lstm_widths])
+    multi_rnn_cell = MultiRNNCell([SymGRUCell(width, n_objects) for width in lstm_widths])
 
     h, state = tf.nn.dynamic_rnn(
             cell=multi_rnn_cell,
@@ -182,9 +182,79 @@ def inet_enc_net(enc_x, lstm_widths, dense_widths):
     enc = h[-1] # Shape of [batch_size, lstm_widths[-1]]
 
     with tf.variable_scope("mlp"):
-        enc = mlp(enc, [x for x in dense_widths // n_objects])
+        enc = mlp(enc, [x // n_objects for x in dense_widths])
 
     enc = tf.reshape(enc, [-1, n_objects, dense_widths[-1] // n_objects])
+
+    return enc
+
+def inet_enc_net2(enc_x, self_lstm_widths, pair_lstm_widths, self_pre_dense_widths,
+        pair_pre_dense_widths, dense_widths):
+    """Computes an encoding vector using two different stacked LSTMs - one for
+    self dynamics and one for pairwise dynamics. The results of these LSTMS are
+    fed through a pre_dense network, added together, and then sent through a final
+    dense network.
+
+    Note: pre_dense_widths are PER OBJECT, not total. dense_widths remain total.
+
+    @param enc_x: the input tensor of shape [batch_size, n_obs_frames, n_objects, state_size]
+    @param self_lstm_widths: list of hidden layer widths in self dynamics LSTM.
+    @param pair_lstm_widths: list of hidden layer widths in pair dynamics LSTM.
+    @param self_pre_dense_widths: list of hidden layer widths in dense layer after
+        self lstm before summing of hidden layers.
+    @param pair_pre_dense_widths: list of hidden layer widths in dense layer after
+        pair lstm before summing of hidden layers.
+    @param dense_widths: list of hidden layer widths in dense layer after summing
+        of hidden layers.
+    
+    Final enc_size per object will be dense_widths[-1] // n_objects
+    
+    """
+    n_obs_frames = int(enc_x.get_shape()[1])
+    n_objects = int(enc_x.get_shape()[2])
+    state_size = int(enc_x.get_shape()[3])
+
+    h = tf.transpose(enc_x, [1, 0, 2, 3])
+    obj_hs = tf.unstack(h, axis=2)
+
+    self_multi_rnn_cell = MultiRNNCell([GRUCell(width) for width in self_lstm_widths])
+    pair_multi_rnn_cell = MultiRNNCell([GRUCell(width) for width in pair_lstm_widths])
+
+    obj_encs = []
+    
+    for object_num in range(n_objects):
+        sd_h = obj_hs[object_num]
+        with tf.variable_scope("sd_lstms", reuse=tf.AUTO_REUSE):
+            sd_h, state = tf.nn.dynamic_rnn(
+                    cell=self_multi_rnn_cell,
+                    time_major=True,
+                    inputs=sd_h,
+                    scope="sd_lstms",
+                    dtype=tf.float32)
+
+        with tf.variable_scope("sd_pre_mlp", reuse=tf.AUTO_REUSE):
+            obj_enc = mlp(sd_h[-1], self_pre_dense_widths)
+
+        for other_obj in range(n_objects):
+            if object_num == other_obj:
+                continue
+            pair_h = tf.concat([obj_hs[object_num], obj_hs[other_obj]], 2)
+            with tf.variable_scope("pair_lstms", reuse=tf.AUTO_REUSE):
+                pair_h, state = tf.nn.dynamic_rnn(
+                        cell=pair_multi_rnn_cell,
+                        time_major=True,
+                        inputs=pair_h,
+                        scope="pair_lstms",
+                        dtype=tf.float32)
+            with tf.variable_scope("pair_pre_mlp", reuse=tf.AUTO_REUSE):
+                obj_enc += mlp(pair_h[-1], pair_pre_dense_widths)
+
+        with tf.variable_scope("mlp", reuse=tf.AUTO_REUSE):
+            obj_enc = mlp(obj_enc, [x // n_objects for x in dense_widths])
+
+        obj_encs.append(obj_enc)
+
+    enc = tf.stack(obj_encs, axis=1)
 
     return enc
 

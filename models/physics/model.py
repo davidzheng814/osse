@@ -14,7 +14,7 @@ import numpy as np
 from sklearn.linear_model import LinearRegression
 
 from enc_model import lstm_enc_net
-from inet_enc_model import inet_enc_net
+from inet_enc_model import inet_enc_net, inet_enc_net2
 from pred_model import predict_net
 from parser import parser
 from loader import PhysicsDataset
@@ -53,7 +53,11 @@ def get_model_pred(obs_x_true, ro_x_true, n_ro_frames, reuse=False):
         return None, ro_x_pred, tf.constant(0.)
 
     with tf.variable_scope("enc_net", reuse=reuse):
-        enc_pred = inet_enc_net(obs_x_true, args.enc_lstm_widths, args.enc_dense_widths)
+#        enc_pred = inet_enc_net(obs_x_true, args.enc_lstm_widths,
+#                args.enc_dense_widths)
+        enc_pred = inet_enc_net2(obs_x_true, args.enc_lstm_widths,
+                args.enc_lstm_widths, args.enc_pre_dense_widths,
+                args.enc_pre_dense_widths, args.enc_dense_widths)
 
         if args.enc_only:
             return enc_pred

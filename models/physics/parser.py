@@ -80,6 +80,8 @@ parser.add_argument('--decay-factor', type=float, default=0.5,
 
 parser.add_argument('--enc-lstm-widths', type=int, default=[36, 36, 36, 36],
                     nargs='+', help='EncNet widths')
+parser.add_argument('--enc-pre-dense-widths', type=int, default=[36, 36],
+                    nargs='+', help='TransNet widths')
 parser.add_argument('--enc-dense-widths', type=int, default=[36, 36, 45],
                     nargs='+', help='TransNet widths')
 
