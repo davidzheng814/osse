@@ -168,9 +168,21 @@ def inet_enc_net(enc_x, lstm_widths, dense_widths):
     state_size = int(enc_x.get_shape()[3])
 
     h = tf.transpose(enc_x, [1, 0, 2, 3])
-    h = tf.reshape(h, [n_obs_frames, -1, n_objects * state_size])
 
-    multi_rnn_cell = MultiRNNCell([SymGRUCell(width) for width in lstm_widths])
+    # Add reference bit for first object
+    obj_hs = tf.unstack(h, axis=2)
+    def zero_or_one_append(i, obj_h):
+        if i == 0:
+            return tf.ones([tf.shape(obj_h)[0], tf.shape(obj_h)[1], 1])
+        else:
+            return tf.zeros([tf.shape(obj_h)[0], tf.shape(obj_h)[1], 1])
+    obj_hs = [tf.concat([obj_h, zero_or_one_append(i, obj_h)], 2)
+            for i, obj_h in enumerate(obj_hs)]
+    h = tf.stack(obj_hs, axis=2)
+    state_size += 1
+
+    h = tf.reshape(h, [n_obs_frames, -1, state_size])
+    multi_rnn_cell = MultiRNNCell([SymGRUCell(width, n_objects) for width in lstm_widths])
 
     h, state = tf.nn.dynamic_rnn(
             cell=multi_rnn_cell,
@@ -182,7 +194,7 @@ def inet_enc_net(enc_x, lstm_widths, dense_widths):
     enc = h[-1] # Shape of [batch_size, lstm_widths[-1]]
 
     with tf.variable_scope("mlp"):
-        enc = mlp(enc, [x for x in dense_widths // n_objects])
+        enc = mlp(enc, [x // n_objects for x in dense_widths])
 
     enc = tf.reshape(enc, [-1, n_objects, dense_widths[-1] // n_objects])
 
