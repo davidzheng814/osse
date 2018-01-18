@@ -43,6 +43,8 @@ parser.add_argument('--save-all', action='store_true',
 
 parser.add_argument('--enc-only', action='store_true',
                     help='Whether to use EncNet only.')
+parser.add_argument('--pred-only', action='store_true',
+                    help='Whether to use PredNet only.')
 # parser.add_argument('--pred', action='store_true',
 #                     help='Whether to use PredNet.')
 # parser.add_argument('--all', action='store_true',
@@ -61,6 +63,10 @@ parser.add_argument('--baseline', action='store_true',
                     help='Whether to calculate baseline loss.')
 parser.add_argument('--long', action='store_true',
                     help='Whether to save a long rollout.')
+parser.add_argument('--ref-enc-zero', action='store_true',
+                    help='Zero out reference object encoding')
+parser.add_argument('--ref-enc-sub', action='store_true',
+                    help='Zero out reference object encoding')
 
 parser.add_argument('--epochs', type=int, default=500,
                     help='number of epochs')

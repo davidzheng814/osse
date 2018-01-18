@@ -16,6 +16,7 @@ from sklearn.linear_model import LinearRegression
 from enc_model import lstm_enc_net
 from inet_enc_model import inet_enc_net
 from pred_model import predict_net
+from gru_pred_model import gru_pred_net
 from parser import parser
 from loader import PhysicsDataset
 
@@ -44,7 +45,7 @@ def log(*text):
     with open(join(args.log_dir, 'log.txt'), 'a') as f:
         f.write(' '.join([str(x) for x in text]) + '\n')
 
-def get_model_pred(obs_x_true, ro_x_true, n_ro_frames, reuse=False):
+def get_model_pred(obs_x_true, ro_x_true, n_ro_frames, y_true, reuse=False):
     if args.baseline:
         ro_x_pred = tf.reshape(ro_x_true, [-1, n_ro_frames, n_objects, state_size])
         ro_x_pred = tf.concat(
@@ -52,14 +53,27 @@ def get_model_pred(obs_x_true, ro_x_true, n_ro_frames, reuse=False):
 
         return None, ro_x_pred, tf.constant(0.)
 
-    with tf.variable_scope("enc_net", reuse=reuse):
-        enc_pred = inet_enc_net(obs_x_true, args.enc_lstm_widths, args.enc_dense_widths)
+    if args.pred_only:
+        enc_pred_expand = enc_pred = tf.reshape(y_true, [-1, n_objects, 1])
+    else:
+        with tf.variable_scope("enc_net", reuse=reuse):
+            enc_pred = inet_enc_net(obs_x_true, args.enc_lstm_widths, args.enc_dense_widths)
 
-        if args.enc_only:
-            return enc_pred
+            if args.ref_enc_sub:
+                enc_pred -= tf.tile(enc_pred[:,:1], [1, n_objects, 1])
 
-        enc_pred_expand = tf.tile(tf.expand_dims(enc_pred, axis=1), [1, n_rollouts, 1, 1])
-        enc_pred_expand = tf.reshape(enc_pred_expand, [-1, n_objects, enc_size])
+            if args.enc_only:
+                return enc_pred
+
+            enc_pred_expand = tf.tile(tf.expand_dims(enc_pred, axis=1), [1, n_rollouts, 1, 1])
+            enc_pred_expand = tf.reshape(enc_pred_expand, [-1, n_objects, enc_size])
+
+            if args.ref_enc_zero:
+                batch_size = tf.shape(enc_pred_expand)[0]
+                ref_zero = tf.zeros([batch_size, 1, enc_size])
+                new_enc_pred_expand = tf.concat([ref_zero, enc_pred_expand[:,1:]], axis=1)
+                ref_bits = tf.concat([tf.ones([batch_size, 1, 1]), tf.zeros([batch_size, n_objects-1, 1])], axis=1)
+                enc_pred_expand = tf.concat([new_enc_pred_expand, ref_bits], axis=2)
 
     with tf.variable_scope("preprocess_prednet", reuse=reuse):
         init_ro_state = ro_x_true[:,:,:n_prep_frames]
@@ -105,14 +119,19 @@ def get_loss_and_optim(ro_x_pred, ro_x_true, ro_aux_loss, discount, lr_enc, lr_p
         return loss, pos_loss_adjust, None
 
     with tf.variable_scope("optim"):
-        enc_optim = (tf.train.AdamOptimizer(learning_rate=lr_enc)
-            .minimize(loss, var_list=[v for v in tf.trainable_variables()
-                                      if 'enc_net' in v.name]))
-        pred_optim = (tf.train.AdamOptimizer(learning_rate=lr_pred)
-            .minimize(loss, var_list=[v for v in tf.trainable_variables()
-                                      if 'predict_net' in v.name]))
+        if args.pred_only:
+            optim = (tf.train.AdamOptimizer(learning_rate=lr_pred)
+                .minimize(loss, var_list=[v for v in tf.trainable_variables()
+                                          if 'predict_net' in v.name]))
+        else:
+            enc_optim = (tf.train.AdamOptimizer(learning_rate=lr_enc)
+                .minimize(loss, var_list=[v for v in tf.trainable_variables()
+                                          if 'enc_net' in v.name]))
+            pred_optim = (tf.train.AdamOptimizer(learning_rate=lr_pred)
+                .minimize(loss, var_list=[v for v in tf.trainable_variables()
+                                          if 'predict_net' in v.name]))
 
-        optim = tf.group(enc_optim, pred_optim, name='optim')
+            optim = tf.group(enc_optim, pred_optim, name='optim')
     
     return loss, pos_loss_adjust, optim
 
@@ -198,17 +217,17 @@ lr_enc = tf.placeholder(tf.float32, [], name="lr_enc")
 lr_pred = tf.placeholder(tf.float32, [], name="lr_pred")
 
 if args.enc_only:
-    enc_pred = get_model_pred(obs_x_true, ro_x_true, n_ro_frames)
+    enc_pred = get_model_pred(obs_x_true, ro_x_true, n_ro_frames, y_true)
     loss, optim = get_enc_loss_and_optim(enc_pred, y_true, lr_enc)
 else:
-    enc_pred, ro_x_pred, ro_aux_loss = get_model_pred(obs_x_true, ro_x_true, n_ro_frames)
+    enc_pred, ro_x_pred, ro_aux_loss = get_model_pred(obs_x_true, ro_x_true, n_ro_frames, y_true)
     loss, pos_loss, optim = get_loss_and_optim(ro_x_pred, ro_x_true, ro_aux_loss, discount, lr_enc, lr_pred)
 
 if args.long:
     ro_x_true_long = tf.placeholder(tf.float32, 
         [None, n_rollouts, n_ro_frames_long, n_objects, state_size],
         name="ro_x_true_long")
-    enc_pred_long, ro_x_pred_long, _ = get_model_pred(obs_x_true, ro_x_true_long, n_ro_frames_long, reuse=True)
+    enc_pred_long, ro_x_pred_long, _ = get_model_pred(obs_x_true, ro_x_true_long, n_ro_frames_long, y_true, reuse=True)
 
 train_iter = 0
 summary = tf.summary.merge_all()
@@ -363,7 +382,7 @@ def run():
             if args.baseline:
                 break
 
-            if best_loss is None or pos_loss_ < best_loss or args.save_all:
+            if best_loss is None or pos_loss_ < best_loss or args.save_all or args.enc_only:
                 best_loss = pos_loss_
                 best_epoch = epoch
                 saver.save(sess, join(args.ckpt_dir, 'model'), epoch)

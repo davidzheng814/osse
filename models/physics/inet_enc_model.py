@@ -161,7 +161,7 @@ def inet_enc_net(enc_x, lstm_widths, dense_widths):
     @param dense_widths: list of hidden layer widths in dense layer.
     
     Final enc_size per object will be dense_widths[-1] // n_objects
-    
+ 
     """
     n_obs_frames = int(enc_x.get_shape()[1])
     n_objects = int(enc_x.get_shape()[2])
