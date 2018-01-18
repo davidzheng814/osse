@@ -217,6 +217,15 @@ def inet_enc_net2(enc_x, self_lstm_widths, pair_lstm_widths, self_pre_dense_widt
     h = tf.transpose(enc_x, [1, 0, 2, 3])
     obj_hs = tf.unstack(h, axis=2)
 
+    # Add reference bit for first object
+    def zero_or_one_append(i, obj_h):
+        if i == 0:
+            return tf.ones([tf.shape(obj_h)[0], tf.shape(obj_h)[1], 1])
+        else:
+            return tf.zeros([tf.shape(obj_h)[0], tf.shape(obj_h)[1], 1])
+    obj_hs = [tf.concat([obj_h, zero_or_one_append(i, obj_h)], 2)
+            for i, obj_h in enumerate(obj_hs)]
+
     self_multi_rnn_cell = MultiRNNCell([GRUCell(width) for width in self_lstm_widths])
     pair_multi_rnn_cell = MultiRNNCell([GRUCell(width) for width in pair_lstm_widths])
 
