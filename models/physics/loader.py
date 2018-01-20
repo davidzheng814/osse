@@ -4,83 +4,77 @@ import h5py
 import random
 import glob
 
+DSET_SFXES = {
+    'train':'',
+    'test':'',
+    'obj3':'_obj3',
+    'obj9':'_obj9',
+    'long':'_long',
+    'mass32':'_mass32'
+}
+
 # For full end to end models (model.py)
 class PhysicsDataset(object):
-    def __init__(self, data_file, num_points, num_test_points, batch_size, train=True, maxes=None):
-        assert (num_points >= num_test_points) or (num_points < 0)
-
+    def __init__(self, data_file, dset, batch_size=None, num_points=None, norm_x=None):
         f = h5py.File(data_file, 'r')
 
-        num_points = num_points if num_points >= 0 else f['obs_x'].shape[0]
+        sfx = DSET_SFXES[dset]
 
-        if train:
-            self.obs_x_true = f['obs_x'][:num_points - num_test_points]
-            self.ro_x_true = f['ro_x'][:num_points - num_test_points]
-            self.y_true = f['y'][:num_points - num_test_points]
+        if num_points is not None and dset == 'test':
+            self.obs_x = f['obs_x'+sfx][-num_points:]
+            self.ro_x = f['ro_x'+sfx][-num_points:]
+            self.y = f['y'+sfx][-num_points:]
+        elif num_points is not None:
+            self.obs_x = f['obs_x'+sfx][:num_points]
+            self.ro_x = f['ro_x'+sfx][:num_points]
+            self.y = f['y'+sfx][:num_points]
         else:
-            self.obs_x_true = f['obs_x'][-num_test_points:]
-            self.ro_x_true = f['ro_x'][-num_test_points:]
-            self.y_true = f['y'][-num_test_points:]
-
-            self.obs_x_true_long = f['obs_x_long'][:]
-            self.ro_x_true_long = f['ro_x_long'][:]
-            self.y_true_long = f['y_long'][:]
-            self.n_ro_frames_long = self.ro_x_true_long.shape[2]
+            self.obs_x = f['obs_x'+sfx][:]
+            self.ro_x = f['ro_x'+sfx][:]
+            self.y = f['y'+sfx][:]
 
         f.close()
 
-        if maxes:
-            self.maxes = maxes
-        else:
-            self.maxes = {
-                'state':np.amax(self.obs_x_true, axis=(0, 1, 2)), 
-                'y':np.amax(self.y_true, axis=(0, 1))
-            }
+        if isinstance(norm_x, str) and norm_x == 'use_data':
+            norm_x = np.amax(self.obs_x, axis=(0, 1, 2))
 
-        self.obs_x_true /= self.maxes['state']
-        self.ro_x_true /= self.maxes['state']
-        self.y_true /= self.maxes['y']
-        if not train:
-            self.obs_x_true_long /= self.maxes['state']
-            self.ro_x_true_long /= self.maxes['state']
-            self.y_true_long /= self.maxes['y']
-
-        if len(self.y_true.shape) == 3:
-            self.y_true = np.stack(
-                    [self.y_true[:,0,1], self.y_true[:,0,2], self.y_true[:,1,2]],
-                    axis=1)
-            if not train:
-                self.y_true_long = np.stack(
-                    [self.y_true_long[:,0,1], self.y_true_long[:,0,2], self.y_true_long[:,1,2]],
-                    axis=1)
+        if norm_x is not None:
+            self.obs_x /= norm_x
+            self.ro_x /= norm_x
+            self.norm_x = norm_x
 
         self.batch_size = batch_size
-        self.train = train
+        self.shuffle = dset == 'train'
+        self.dset = dset
+        self.num_points = self.obs_x.shape[0]
+        self.n_obs_frames = self.obs_x.shape[1]
+        self.n_ro_frames = self.ro_x.shape[1]
+        self.n_objects = self.obs_x.shape[2]
+        self.state_size = self.obs_x.shape[3]
 
-        self.n_obs_frames = self.obs_x_true.shape[1]
-        self.n_objects = self.obs_x_true.shape[2]
-        self.state_size = self.obs_x_true.shape[3]
-
-        self.n_rollouts = self.ro_x_true.shape[1]
-        self.n_ro_frames = self.ro_x_true.shape[2]
-        self.y_size = self.y_true.shape[1] // self.n_objects
+        self.y_size = self.y.shape[1] // self.n_objects
 
     def __len__(self):
-        return len(self.obs_x_true)
+        return self.num_points
+
+    def get_all(self):
+        return self.obs_x, self.ro_x, self.y
 
     def get_batches(self):
-        inds = np.arange(len(self.obs_x_true))
-        if self.train:
+        if self.batch_size is None:
+            yield self.get_all() # Just a length-1 iterator
+            return
+
+        inds = np.arange(self.num_points)
+        if self.shuffle:
             np.random.shuffle(inds)
 
         ind = 0
-        while ind < len(inds):
-            yield (self.obs_x_true[inds[ind:ind+self.batch_size]],
-                   self.ro_x_true[inds[ind:ind+self.batch_size]],
-                   self.y_true[inds[ind:ind+self.batch_size]])
+        while ind < self.num_points:
+            yield (self.obs_x[inds[ind:ind+self.batch_size]],
+                   self.ro_x[inds[ind:ind+self.batch_size]],
+                   self.y[inds[ind:ind+self.batch_size]])
             ind += self.batch_size
 
         return
 
-    def get_long_batch(self):
-        return self.obs_x_true_long, self.ro_x_true_long, self.y_true_long

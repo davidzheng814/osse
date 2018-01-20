@@ -8,11 +8,11 @@ parser = argparse.ArgumentParser(description='Physics mass inference model.')
 
 """"" DATA LOADING """""
 
-parser.add_argument('--data-file', type=str, default=join(DATAROOT, 'physics_b_n3_e50_p25_f120_collide_three.h5'),
+parser.add_argument('--data-file', type=str, default=join(DATAROOT, 'physics_b.h5'),
                     help='path to training data')
-parser.add_argument('--num-points', type=int, default=-1,
-                    help='max points to use. (-1 for no max)')
-parser.add_argument('--test-points', type=int, default=1000,
+parser.add_argument('--num-points', type=int, default=0,
+                    help='max points to use. (0 for no max)')
+parser.add_argument('--test-points', type=int, default=5000,
                     help='num files to test.')
 parser.add_argument('--max-samples', type=int,
                     help='max samples per group.')
@@ -45,14 +45,8 @@ parser.add_argument('--enc-only', action='store_true',
                     help='Whether to use EncNet only.')
 parser.add_argument('--pred-only', action='store_true',
                     help='Whether to use PredNet only.')
-# parser.add_argument('--pred', action='store_true',
-#                     help='Whether to use PredNet.')
-# parser.add_argument('--all', action='store_true',
-#                     help='Whether to use both enc net and pred net.')
-# parser.add_argument('--no-enc', action='store_true',
-#                     help='Whether to replace encoding with zeros.')
-parser.add_argument('--freeze-encs', action='store_true',
-                    help='Whether to freeze training of encodings.')
+parser.add_argument('--skip-train', action='store_true',
+                    help='Whether to skip training')
 parser.add_argument('--calc-encs', action='store_true',
                     help='Whether to save encodings.')
 parser.add_argument('--logy', action='store_true',
@@ -72,36 +66,26 @@ parser.add_argument('--epochs', type=int, default=500,
                     help='number of epochs')
 parser.add_argument('--batch-size', type=int, default=1024,
                     help='batch size')
-parser.add_argument('--loss-fn', type=str, default='mse',
-                    help='Loss function')
-parser.add_argument('--lr-enc', type=float, default=5e-4,
-                    help='enc model learning rate')
-parser.add_argument('--lr-pred', type=float, default=5e-4,
-                    help='pred model learning rate')
+parser.add_argument('--lr', type=float, default=5e-4,
+                    help='learning rate')
 parser.add_argument('--decay-cutoff', type=int, default=-1,
                     help='if loss does not improve for this number of epochs, both'
                          'learning rates are decreased by factor --decay-factor')
-parser.add_argument('--decay-factor', type=float, default=0.5,
+parser.add_argument('--decay-factor', type=float, default=0.8,
                     help='ratio to cut learning rate by after --decay-cutoff reached')
+parser.add_argument('--noise', type=float, default=0, help="specify standard deviation of noise (as ratio of standard deviation of state elements).")
 
 parser.add_argument('--enc-lstm-widths', type=int, default=[36, 36, 36, 36],
                     nargs='+', help='EncNet widths')
-parser.add_argument('--enc-dense-widths', type=int, default=[36, 36, 45],
+parser.add_argument('--enc-dense-widths', type=int, default=[12, 12, 15],
                     nargs='+', help='TransNet widths')
 
-parser.add_argument('--code-size', type=int, default=64,
-                    help='Size of code.')
-parser.add_argument('--ro-discount', help="")
-parser.add_argument('--noise', type=float, default=0, help="specify standard deviation of noise (as ratio of standard deviation of state elements).")
-# parser.add_argument('--alpha', type=float, default=6e5,
-#                     help='pred model learning rate alpha decay')
-parser.add_argument('--offsets', type=int, default=[1, 2, 4],
-                    nargs='+', help='The timestep offset values.')
-parser.add_argument('--beta', type=float,
-                    help='Higher beta indicates longer periods of timestep discounting.')
-
-""""" MISCELLANEOUS """""
-
-# parser.add_argument('--progbar', action='store_true',
-#                     help='Progress bar')
+parser.add_argument('--re-widths', type=int, default=[150, 150, 150, 150],
+                    nargs='+', help='RelationNet widths')
+parser.add_argument('--sd-widths', type=int, default=[100, 100],
+                    nargs='+', help='SelfDynamicsNet widths')
+parser.add_argument('--effect-width', type=int, default=50,
+                    help='Width of effect (output of relation net and sd net)')
+parser.add_argument('--agg-widths', type=int, default=[100, 50],
+                    nargs='+', help='AggregationNet widths')
 

@@ -1,11 +1,10 @@
 from __future__ import print_function, division
 
-print("Importing")
-
 import time
 import math
 import json
 import os
+import sys
 from os.path import basename, join
 import shutil
 
@@ -13,381 +12,205 @@ import tensorflow as tf
 import numpy as np
 from sklearn.linear_model import LinearRegression
 
-from enc_model import lstm_enc_net
-from inet_enc_model import inet_enc_net
+from gru_enc_model import gru_enc_net
 from pred_model import predict_net
-from gru_pred_model import gru_pred_net
 from parser import parser
 from loader import PhysicsDataset
+from shared import log, get_enc_analysis
 
-args = parser.parse_args()
+OUT_WIDTH = 2
 
-print("Loading Datasets")
+class Model(object):
+    def get_enc_pred(self, obs_x_true, y_true):
+        """Returns enc_pred
+            obs_x_true - Shape: [batch_size, n_obs_frames, n_objects, state_size]
+            y_true - Shape: [batch_size, n_objects * y_size]
+        """
+        args = self.args
+        n_objects = tf.shape(obs_x_true)[2]
 
-train_set = PhysicsDataset(args.data_file, args.num_points, args.test_points, args.batch_size, train=True)
-test_set = PhysicsDataset(args.data_file, args.num_points, args.test_points, args.batch_size, train=False, maxes=train_set.maxes)
-
-n_obs_frames = train_set.n_obs_frames
-n_ro_frames = train_set.n_ro_frames
-n_objects = train_set.n_objects
-n_rollouts = train_set.n_rollouts
-n_ro_frames_long = test_set.n_ro_frames_long
-state_size = train_set.state_size
-y_size = train_set.y_size
-enc_size = args.enc_dense_widths[-1] // n_objects
-n_prep_frames = max(args.offsets) + args.frames_per_samp - 1
-
-if args.enc_only:
-    assert enc_size == y_size
-
-def log(*text):
-    print(*text)
-    with open(join(args.log_dir, 'log.txt'), 'a') as f:
-        f.write(' '.join([str(x) for x in text]) + '\n')
-
-def get_model_pred(obs_x_true, ro_x_true, n_ro_frames, y_true, reuse=False):
-    if args.baseline:
-        ro_x_pred = tf.reshape(ro_x_true, [-1, n_ro_frames, n_objects, state_size])
-        ro_x_pred = tf.concat(
-                [ro_x_pred[:,:n_prep_frames], ro_x_pred[:,n_prep_frames-1:-1]], axis=1)
-
-        return None, ro_x_pred, tf.constant(0.)
-
-    if args.pred_only:
-        enc_pred_expand = enc_pred = tf.reshape(y_true, [-1, n_objects, 1])
-    else:
-        with tf.variable_scope("enc_net", reuse=reuse):
-            enc_pred = inet_enc_net(obs_x_true, args.enc_lstm_widths, args.enc_dense_widths)
-
-            if args.ref_enc_sub:
-                enc_pred -= tf.tile(enc_pred[:,:1], [1, n_objects, 1])
-
-            if args.enc_only:
-                return enc_pred
-
-            enc_pred_expand = tf.tile(tf.expand_dims(enc_pred, axis=1), [1, n_rollouts, 1, 1])
-            enc_pred_expand = tf.reshape(enc_pred_expand, [-1, n_objects, enc_size])
-
-            if args.ref_enc_zero:
-                batch_size = tf.shape(enc_pred_expand)[0]
-                ref_zero = tf.zeros([batch_size, 1, enc_size])
-                new_enc_pred_expand = tf.concat([ref_zero, enc_pred_expand[:,1:]], axis=1)
-                ref_bits = tf.concat([tf.ones([batch_size, 1, 1]), tf.zeros([batch_size, n_objects-1, 1])], axis=1)
-                enc_pred_expand = tf.concat([new_enc_pred_expand, ref_bits], axis=2)
-
-    with tf.variable_scope("preprocess_prednet", reuse=reuse):
-        init_ro_state = ro_x_true[:,:,:n_prep_frames]
-        init_ro_state = tf.reshape(init_ro_state, [-1, n_prep_frames, n_objects, state_size])
-
-    with tf.variable_scope("predict_net", reuse=reuse):
-        ro_x_pred, ro_aux_loss = predict_net(init_ro_state, enc_pred_expand,
-                args.frames_per_samp, args.code_size, n_ro_frames, args.offsets,
-                args.noise)
-
-    return enc_pred, ro_x_pred, ro_aux_loss
-
-def get_enc_loss_and_optim(enc_pred, y_true, lr_enc):
-    with tf.variable_scope("enc_losses"):
-        enc_pred = tf.reshape(enc_pred, [-1, n_objects])
-        loss = tf.reduce_mean(tf.squared_difference(enc_pred, y_true))
-        tf.summary.scalar('enc_loss', loss)
-
-    with tf.variable_scope("enc_optim"):
-        optim = (tf.train.AdamOptimizer(learning_rate=lr_enc)
-            .minimize(loss, var_list=[v for v in tf.trainable_variables()
-                                      if 'enc_net' in v.name]))
-
-    return loss, optim
-
-def get_loss_and_optim(ro_x_pred, ro_x_true, ro_aux_loss, discount, lr_enc, lr_pred):
-    with tf.variable_scope("losses"):
-        discount = tf.reshape(discount, [-1, 1, 1]) # For broadcasting purposes. 
-        ro_x_true = tf.reshape(ro_x_true, [-1, n_ro_frames, n_objects, state_size])
-        loss_tensor = tf.squared_difference(ro_x_true, ro_x_pred)
-
-        loss = tf.reduce_mean(discount * loss_tensor, name="loss") + ro_aux_loss
-        pos_loss_tensor = loss_tensor[:,n_prep_frames:,:,:2]
-        pos_loss = tf.reduce_mean(pos_loss_tensor, name="pos_loss")
-        pos_loss_adjust = tf.reduce_mean(tf.multiply(pos_loss_tensor, np.square(train_set.maxes['state'][:2])))
-
-        tf.summary.scalar('aux_loss', ro_aux_loss)
-        tf.summary.scalar('loss', loss)
-        tf.summary.scalar('pos_loss', pos_loss)
-        tf.summary.scalar('pos_loss_adjust', pos_loss_adjust)
-
-    if args.baseline:
-        return loss, pos_loss_adjust, None
-
-    with tf.variable_scope("optim"):
         if args.pred_only:
-            optim = (tf.train.AdamOptimizer(learning_rate=lr_pred)
-                .minimize(loss, var_list=[v for v in tf.trainable_variables()
-                                          if 'predict_net' in v.name]))
+            enc_pred = tf.reshape(y_true, [-1, n_objects, 1]) # TODO Hardcoded y_size.
         else:
-            enc_optim = (tf.train.AdamOptimizer(learning_rate=lr_enc)
-                .minimize(loss, var_list=[v for v in tf.trainable_variables()
-                                          if 'enc_net' in v.name]))
-            pred_optim = (tf.train.AdamOptimizer(learning_rate=lr_pred)
-                .minimize(loss, var_list=[v for v in tf.trainable_variables()
-                                          if 'predict_net' in v.name]))
+            with tf.variable_scope("enc_net", reuse=tf.AUTO_REUSE):
+                # Shape: [batch_size, n_objects, enc_size]
+                enc_pred = gru_enc_net(obs_x_true, args.enc_lstm_widths, args.enc_dense_widths)
 
-            optim = tf.group(enc_optim, pred_optim, name='optim')
-    
-    return loss, pos_loss_adjust, optim
+                if args.ref_enc_sub:
+                    enc_pred -= tf.tile(enc_pred[:,:1], [1, n_objects, 1])
 
-def enc_analysis(enc_pred, y_true):
-    """
-        @param enc_pred: [batch_size, n_objects, enc_size]
-        @param y_true: [batch_size, n_objects]
-    """
+                if args.enc_only:
+                    return enc_pred
 
-    r2s = []
-    for obj_ind in range(enc_pred.shape[1]):
-        X = enc_pred[:,obj_ind]
-        y = y_true[:,obj_ind]
+        return enc_pred
 
-        if args.logy:
-            y = np.log(y)
+    def get_ro_pred(self, ro_x_true, enc_pred):
+        """Returns ro_x_pred
+        
+            ro_x_true - Shape: [batch_size, n_ro_frames, n_objects, state_size]
+            enc_pred - Shape: [batch_size, n_objects, enc_size]
+        """
 
-        model = LinearRegression()
-        model.fit(X, y)
-        r2 = model.score(X, y)
-        r2s.append(r2)
+        args = self.args
+        n_ro_frames = int(ro_x_true.get_shape()[1])
+        n_objects = int(ro_x_true.get_shape()[2])
+        state_size = int(ro_x_true.get_shape()[3])
+        enc_size = int(enc_pred.get_shape()[2])
+        # Shape: [batch_size * (n_ro_frames-1), n_objects, state_size]
+        ro_x_inp = tf.reshape(ro_x_true[:,:-1], [-1, n_objects, state_size])
+        enc_pred = tf.reshape(tf.tile(enc_pred, [1, n_ro_frames-1, 1]), [-1, n_objects, enc_size])
 
-    # mean = np.mean(enc_pred, axis=0, keepdims=True)
-    # std = np.std(enc_pred, axis=0, keepdims=True)
-    # enc_pred_std = (enc_pred - mean) / std
+        if args.baseline:
+            ro_x_pred = ro_x_inp[:,:,2:] # extract just the velocities. 
+        else:
+            with tf.variable_scope("predict_net", reuse=tf.AUTO_REUSE):
+                ro_x_pred = predict_net(ro_x_inp, enc_pred, args.re_widths, args.sd_widths,
+                                        args.agg_widths, args.effect_width, OUT_WIDTH,
+                                        noise_ratio=args.noise)
 
-    # logy = np.log(y_true)
-    # mean = np.mean(logy, axis=0, keepdims=True)
-    # std = np.std(logy, axis=0, keepdims=True)
-    # y_true_std = np.expand_dims((logy - mean) / std, axis=2)
+        return ro_x_pred
 
-    # enc_corr = np.max(np.abs(np.mean(enc_pred_std * y_true_std, axis=0)), axis=1)
+    def get_enc_loss(self, enc_pred, y_true):
+        with tf.variable_scope("enc_losses"):
+            enc_pred = tf.reshape(enc_pred, [-1, tf.shape(y_true)[1]])
+            loss = tf.reduce_mean(tf.squared_difference(enc_pred, y_true))
+            self.summaries.append(tf.summary.scalar('enc_loss', loss))
 
-    return r2s
+        return loss
 
-def get_states_json(states):
-    payload = []
-    for frame in states:
-        pos, vel = [], []
-        for obj in frame:
-            obj = obj.tolist()
-            pos.append({'x':obj[0], 'y':obj[1]})
-            vel.append({'x':obj[2], 'y':obj[3]})
-        payload.append({'pos':pos, 'vel':vel})
-    return payload 
+    def get_pred_loss(self, ro_x_pred, ro_x_true):
+        with tf.variable_scope("losses"):
+            ro_x_true_vel = ro_x_true[:,1:,:,2:]  # get velocity, removing first frame
+            # MSE loss of ro_x_true_vel and ro_x_pred
+            loss = tf.reduce_mean(tf.squared_difference(
+                    tf.reshape(ro_x_true_vel, [-1]),
+                    tf.reshape(ro_x_pred, [-1])))
+            # TODO Pos loss from before. 
 
-def save_json(x_true, x_pred, y_true, out_file):
-    """Write states to json file.
-        @param x_true: [n_ro_frames_long, n_objects, state_size]
-        @param x_pred: [n_ro_frames_long, n_objects, state_size]
-        @param y_true: [n_objects]
-    """
-    payload = {
-        'ro_states': [get_states_json(x_pred)],
-        'true_states': get_states_json(x_true),
-        'enc_true': y_true.tolist()
-    }
-    with open(out_file, 'w') as f:
-        f.write(json.dumps(payload, indent=4, separators=(',',': ')))
+            self.summaries.append(tf.summary.scalar('loss', loss))
 
-def get_discount_factor():
-    if args.beta:
-        epochs = (train_iter+1) * args.batch_size / len(train_set)
-        return 1 - math.e ** (-epochs / args.beta)
-    return 1.
+        return loss
 
-lr_params = { 'decay': 1.0 }
+    def get_optim(self, lr):
+        with tf.variable_scope("optim"):
+            optim = tf.train.AdamOptimizer(learning_rate=lr).minimize(self.loss)
+        return optim
 
-def get_learning_rates():
-    if args.freeze_encs:
-        return 0, args.lr_pred * lr_params['decay']
-    return args.lr_enc * lr_params['decay'], args.lr_pred * lr_params['decay']
+    def build_model(self, train=False):
+        self.summaries = []
+        self.obs_x_true = tf.placeholder(tf.float32,
+                [None, self.dset.n_obs_frames, self.dset.n_objects, self.dset.state_size],
+                name="obs_x_true")
+        self.ro_x_true = tf.placeholder(tf.float32,
+                [None, self.dset.n_ro_frames, self.dset.n_objects, self.dset.state_size],
+                name="ro_x_true")
+        self.y_true = tf.placeholder(tf.float32, [None, self.dset.n_objects], name="y_true")
+        self.lr = tf.placeholder(tf.float32, [], name="lr")
 
-print("Building Model")
+        self.enc_pred = self.get_enc_pred(self.obs_x_true, self.y_true)
+        self.ro_x_pred = self.get_ro_pred(self.ro_x_true, self.enc_pred)
 
-obs_x_true = tf.placeholder(tf.float32, [None, n_obs_frames, n_objects, state_size],
-        name="obs_x_true")
-ro_x_true = tf.placeholder(tf.float32, [None, n_rollouts, n_ro_frames, n_objects, state_size],
-        name="ro_x_true")
-y_true = tf.placeholder(tf.float32, [None, n_objects], name="y_true")
-discount = tf.placeholder(tf.float32, [n_ro_frames], name="discount")
-lr_enc = tf.placeholder(tf.float32, [], name="lr_enc")
-lr_pred = tf.placeholder(tf.float32, [], name="lr_pred")
+        if self.args.enc_only:
+            self.loss = self.get_enc_loss(self.enc_pred, self.y_true)
+        else:
+            self.loss = self.get_pred_loss(self.ro_x_pred, self.ro_x_true)
 
-if args.enc_only:
-    enc_pred = get_model_pred(obs_x_true, ro_x_true, n_ro_frames, y_true)
-    loss, optim = get_enc_loss_and_optim(enc_pred, y_true, lr_enc)
-else:
-    enc_pred, ro_x_pred, ro_aux_loss = get_model_pred(obs_x_true, ro_x_true, n_ro_frames, y_true)
-    loss, pos_loss, optim = get_loss_and_optim(ro_x_pred, ro_x_true, ro_aux_loss, discount, lr_enc, lr_pred)
+        if not self.args.baseline and train:
+            self.optim = self.get_optim(self.lr)
 
-if args.long:
-    ro_x_true_long = tf.placeholder(tf.float32, 
-        [None, n_rollouts, n_ro_frames_long, n_objects, state_size],
-        name="ro_x_true_long")
-    enc_pred_long, ro_x_pred_long, _ = get_model_pred(obs_x_true, ro_x_true_long, n_ro_frames_long, y_true, reuse=True)
+        self.summary = tf.summary.merge(self.summaries)
 
-train_iter = 0
-summary = tf.summary.merge_all()
+    def save_encs(self, enc_pred, y_true):
+        log(self.args.log_dir, "Enc R^2:", get_enc_analysis(enc_pred, y_true))
+        np.savez(join(self.args.log_dir, 'enc_'+self.dset_name+'.npz'), enc=enc_pred, y=y_true)
 
-if not args.baseline:
-    saver = tf.train.Saver(var_list=tf.trainable_variables())
+    def save_ro(self):
+        pass
+        # TODO It's not this easy....
+        # for i in range(len(ro_x_true)):
+        #     save_json(ro_x_true[i], ro_x_pred[i], y_true[i],
+        #               join(self.args.log_dir, 'ro_'+str(i)+'.json'))
 
-if args.restore:
-    if args.new_dir:
-        old_folder_ind = basename(os.path.dirname(args.restore))
-        folder_ind = str(max([int(x) for x in os.listdir(args.log_dir)]) + 1)
-        print("Copying {} to {}.".format(old_folder_ind, folder_ind))
-        try:
-            shutil.copytree(join(args.log_dir, old_folder_ind),
-                            join(args.log_dir, folder_ind))
-        except shutil.Error as e:
-            print("Shutil error but continuing: {}".format(e))
-        try:
-            shutil.copytree(join(args.ckpt_dir, old_folder_ind),
-                            join(args.ckpt_dir, folder_ind))
-        except shutil.Error as e:
-            print("Shutil error but continuing: {}".format(e))
-    else:
-        folder_ind = basename(os.path.dirname(args.restore))
-else:
-    folder_ind = str(max([int(x) for x in os.listdir(args.log_dir)]) + 1)
+class TrainModel(Model):
+    def __init__(self, args):
+        self.args = args
+        self.lr_val = self.args.lr
 
-args.log_dir = join(args.log_dir, folder_ind)
-args.ckpt_dir = join(args.ckpt_dir, folder_ind)
-
-if args.restore:
-    log("Reloading:", folder_ind)
-else:
-    os.mkdir(args.log_dir)
-
-def run_epoch(sess, writer, train):
-    global train_iter
-    epoch_loss, epoch_pos_loss, epoch_aux_loss, num_batches = 0., 0., 0., 0
-    data_set = train_set if train else test_set
-    if args.enc_only:
-        out_ops = [loss, summary]
-    else:
-        out_ops = [loss, pos_loss, ro_aux_loss, summary]
-    if train and not args.baseline:
-        out_ops.append(optim)
-    else:
-        if args.calc_encs:
-            out_ops.append(enc_pred)
-            y_trues, enc_preds = [], []
-
-    for obs_x_true_, ro_x_true_, y_true_ in data_set.get_batches():
-        discount_ = np.geomspace(1, get_discount_factor() ** n_ro_frames, num=n_ro_frames)
-        lr_enc_, lr_pred_ = get_learning_rates()
-
-        kwargs = {}
-        if args.runtime and train and train_iter % 100 == 0: # record runtime
-            run_metadata = tf.RunMetadata()
-            kwargs = {
-                'options': tf.RunOptions(trace_level=tf.RunOptions.FULL_TRACE),
-                'run_metadata': run_metadata
-            }
-
-        res = sess.run(out_ops, feed_dict={
-            obs_x_true:obs_x_true_,
-            ro_x_true:ro_x_true_,
-            discount:discount_,
-            y_true:y_true_,
-            lr_enc:lr_enc_,
-            lr_pred:lr_pred_,
-        }, **kwargs)
-
-        if args.runtime and train and train_iter % 100 == 0:
-            writer.add_run_metadata(run_metadata, 'step%d' % train_iter)
-
-        num_batches += 1
-        epoch_loss += res[0]
+        assert args.num_points == 0 or args.num_points > args.test_points
+        self.dset = PhysicsDataset(args.data_file, 'train',
+            batch_size=args.batch_size,
+            num_points=args.num_points - args.test_points,
+            norm_x='use_data')
         if args.enc_only:
-            writer.add_summary(res[1], train_iter)
+            assert args.enc_dense_widths[-1] == self.dset.y_size
+        self.batches_per_epoch = len(self.dset) // args.batch_size
+        self.build_model(train=True)
+
+    def set_learning_rate(self, epochs_without_dec):
+        if self.args.decay_cutoff > 0 and epochs_without_dec >= self.args.decay_cutoff:
+            self.lr_val *= self.args.decay_factor
+            log(self.args.log_dir, 'Decaying learning rate to {:.2E}'.format(self.lr_val))
+
+    def run(self, epoch, sess, writer, epochs_without_dec):
+        self.set_learning_rate(epochs_without_dec)
+        losses = []
+        for ind, (obs_x_true, ro_x_true, y_true) in enumerate(self.dset.get_batches()):
+            loss_, summary_, optim_ = sess.run([self.loss, self.summary, self.optim], feed_dict={
+                self.obs_x_true:obs_x_true,
+                self.ro_x_true:ro_x_true,
+                self.y_true:y_true,
+                self.lr:self.lr_val
+            })
+
+            losses.append(loss_)
+            writer.add_summary(summary_, epoch + ind / self.batches_per_epoch)
+
+        log(self.args.log_dir, 'Train Loss: {:.4E}'.format(np.mean(losses)))
+
+class TestModel(Model):
+    def __init__(self, args, dset_name, norm_x):
+        self.args = args
+        self.dset = PhysicsDataset(args.data_file, dset_name,
+            batch_size=args.batch_size,
+            num_points=args.test_points,
+            norm_x=norm_x)
+        self.best_loss = float('inf')
+        self.dset_name = dset_name
+        self.build_model(train=False)
+        self.epochs_wo_dec = 0
+
+    def run(self, epoch, sess, writer, save_encs=False, save_ro=False):
+        if save_ro:
+            self.save_ro()
+            return
+
+        losses, enc_preds, y_trues = [], [], []
+        for obs_x_true, ro_x_true, y_true in self.dset.get_batches():
+            out = sess.run([self.loss, self.enc_pred, self.summary], feed_dict={
+                self.obs_x_true:obs_x_true,
+                self.ro_x_true:ro_x_true,
+                self.y_true:y_true,
+            })
+            losses.append(out[0])
+            enc_preds.append(out[1])
+            y_trues.append(y_true)
+
+            if self.dset_name == 'test': # TODO add summary for all dsets, not just test
+                writer.add_summary(out[2], epoch + 1)
+
+        loss = np.mean(losses)
+        enc_pred = np.concatenate(enc_preds)
+        y_true = np.concatenate(y_trues)
+
+        log(self.args.log_dir, 'Dset: {} Loss: {:.4E}'.format(self.dset_name, loss))
+
+        if save_encs: # Saves and analyzes encodings
+            self.save_encs(enc_pred, y_true)
+
+        # Update epochs_wo_dec
+        if loss < self.best_loss:
+            self.epochs_wo_dec = 0
+            self.best_loss = loss
         else:
-            epoch_pos_loss += res[1]
-            epoch_aux_loss += res[2]
-            writer.add_summary(res[3], train_iter)
-
-        if train:
-            train_iter += 1
-        elif args.calc_encs:
-            y_trues.append(y_true_)
-            enc_preds.append(res[2] if args.enc_only else res[4])
-
-    if not train and args.calc_encs: # Encoding analysis
-        epoch_y_true = np.concatenate(y_trues, axis=0)
-        epoch_enc_pred = np.concatenate(enc_preds, axis=0)
-        log("Enc R^2:", enc_analysis(epoch_enc_pred, epoch_y_true))
-        np.savez(join(args.log_dir, 'enc.npz'), enc=epoch_enc_pred, y=epoch_y_true)
-
-    return epoch_loss / num_batches, epoch_pos_loss / num_batches, epoch_aux_loss / num_batches
-
-def run_long_rollouts(sess):
-    obs_x_true_long_, ro_x_true_long_, y_true_long_ = test_set.get_long_batch()
-    ro_x_pred_long_ = sess.run(ro_x_pred_long, feed_dict={
-        obs_x_true:obs_x_true_long_,
-        ro_x_true_long:ro_x_true_long_,
-    })
-    ro_x_true_long_ = np.reshape(ro_x_true_long_,
-            [-1, n_ro_frames_long, n_objects, state_size])
-    y_true_long_ = np.reshape(np.tile(y_true_long_, [1, n_rollouts]),
-            [-1, n_objects])
-
-    ro_x_true_long_ *= train_set.maxes['state']
-    ro_x_pred_long_ *= train_set.maxes['state']
-    y_true_long_ *= train_set.maxes['y']
-    for samp_ind in range(len(ro_x_true_long_)):
-        save_json(ro_x_true_long_[samp_ind], ro_x_pred_long_[samp_ind],
-                y_true_long_[samp_ind],
-                join(args.log_dir, 'long_ro_'+str(samp_ind)+'.json'))
-
-def run():
-    with tf.Session() as sess:
-        sess.run(tf.global_variables_initializer())
-        if args.restore:
-            saver.restore(sess, args.restore)
-            start_epoch = int(basename(args.restore.split('-')[-1])) + 1
-            global train_iter
-            train_iter = start_epoch * len(train_set) // args.batch_size
-            log("Start Epoch: ", start_epoch)
-        else:
-            start_epoch = 1
-        train_writer = tf.summary.FileWriter(args.log_dir + '/train', sess.graph)
-        test_writer = tf.summary.FileWriter(args.log_dir + '/test')
-
-        print("Training")
-
-        best_loss = None
-        best_epoch = start_epoch - 1
-        for epoch in range(start_epoch, args.epochs+1):
-            start_time = time.time()
-            log('Log: {} Discount Factor: {} Epochs w/o dec: {}'.format(
-                folder_ind, get_discount_factor(), epoch-best_epoch-1))
-            if args.decay_cutoff != -1 and epoch-best_epoch-1 >= args.decay_cutoff:
-                lr_params['decay'] *= args.decay_factor
-                log('Decaying learning rates to: {}'.format(get_learning_rates()))
-                best_epoch = epoch
-            if args.long:
-                run_long_rollouts(sess)
-            loss_, pos_loss_, aux_loss_ = run_epoch(sess, train_writer, train=True)
-            log('TRAIN: Epoch: {} Total Loss: {:.6E} Pos Loss: {:.6E} Aux Loss: {:.6E} Time: {:.2f}s'.format(
-                epoch, loss_, pos_loss_, aux_loss_, time.time() - start_time))
-
-            loss_, pos_loss_, aux_loss_ = run_epoch(sess, test_writer, train=False)
-            log('TEST: Total Loss: {:.6E} Pos Loss: {:.6E} Aux Loss: {:.6E} \n'.format(loss_, pos_loss_, aux_loss_))
-
-            if args.baseline:
-                break
-
-            if best_loss is None or pos_loss_ < best_loss or args.save_all or args.enc_only:
-                best_loss = pos_loss_
-                best_epoch = epoch
-                saver.save(sess, join(args.ckpt_dir, 'model'), epoch)
-
-if __name__ == '__main__':
-    log("Arguments:", args)
-    run()
+            self.epochs_wo_dec += 1
 

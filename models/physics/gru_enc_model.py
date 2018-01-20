@@ -154,7 +154,7 @@ class GRUCell(RNNCell):
 
         return h, h
 
-def inet_enc_net(enc_x, lstm_widths, dense_widths):
+def gru_enc_net(enc_x, lstm_widths, dense_widths):
     """Computes an encoding vector using stacked LSTMs.
     @param enc_x: the input tensor of shape [batch_size, n_obs_frames, n_objects, state_size]
     @param lstm_widths: list of hidden layer widths in LSTM.
@@ -194,9 +194,9 @@ def inet_enc_net(enc_x, lstm_widths, dense_widths):
     enc = h[-1] # Shape of [batch_size, lstm_widths[-1]]
 
     with tf.variable_scope("mlp"):
-        enc = mlp(enc, [x // n_objects for x in dense_widths])
+        enc = mlp(enc, dense_widths)
 
-    enc = tf.reshape(enc, [-1, n_objects, dense_widths[-1] // n_objects])
+    enc = tf.reshape(enc, [-1, n_objects, dense_widths[-1]])
 
     return enc
 
