@@ -56,12 +56,12 @@ def interaction_net(x, n_objects, re_widths, sd_widths, agg_widths, effect_width
 
     return pred
 
-def predict_net(ro_x_inp, enc_pred, re_widths, sd_widths, agg_widths, effect_width,
+def predict_net(ro_x_inp, enc_pred, n_ro_frames, re_widths, sd_widths, agg_widths, effect_width,
                 out_width, noise_ratio=0.0):
     """Returns list of n_ro_frames future object states from an initial object state.
    
-    @param ro_x_inp - initial state tensor of shape [batch_size * (n_ro_frames-1), n_objects, state_size]
-    @param enc_pred - encoding tensor of shape [batch_size * (n_ro_frames-1), n_objects, enc_size]
+    @param ro_x_inp - initial state tensor of shape [batch_size, n_objects, state_size]
+    @param enc_pred - encoding tensor of shape [batch_size, n_objects, enc_size]
     @param noise_ratio - the amount of white noise to add to states during rollout.
         The noise is distributed in a gaussian with standard deviation equal to
         noise_ratio * batch_std(states)
@@ -72,22 +72,27 @@ def predict_net(ro_x_inp, enc_pred, re_widths, sd_widths, agg_widths, effect_wid
     state_size = int(ro_x_inp.get_shape()[2])
     enc_size = int(enc_pred.get_shape()[2])
 
-    enc_pred = tf.reshape(enc_pred, [-1, enc_size]) # [batch_size*(n_ro_frames-1)*n_objects, enc_size]
-    ro_x_inp = tf.reshape(ro_x_inp, [-1, state_size]) # [batch_size*(n_ro_frames-1)*n_objects, state_size]
+    enc_pred = tf.reshape(enc_pred, [-1, enc_size]) # [batch_size*n_objects, enc_size]
+    ro_x_inp = tf.reshape(ro_x_inp, [-1, state_size]) # [batch_size*n_objects, state_size]
 
-    if noise_ratio > 0.:
-        state_mean, state_var = tf.nn.moments(ro_x_inp, [0])
-        state_std = tf.unstack(tf.sqrt(state_var))
-        noise = [tf.random_normal(shape=tf.shape(ro_x_inp)[:-1], mean=0.0,
-            stddev=noise_ratio * element_std) for element_std in state_std]
-        noise = tf.stack(noise, axis=1)
-        ro_x_inp += noise
+    ro_x_preds = [] # all pred frames
+    for i in range(1, n_ro_frames):
+        if noise_ratio > 0.:
+            state_mean, state_var = tf.nn.moments(ro_x_inp, [0])
+            state_std = tf.unstack(tf.sqrt(state_var))
+            noise = [tf.random_normal(shape=tf.shape(ro_x_inp)[:-1], mean=0.0,
+                stddev=noise_ratio * element_std) for element_std in state_std]
+            noise = tf.stack(noise, axis=1)
+            ro_x_inp += noise
 
-    full_state = tf.concat([enc_pred, ro_x_inp], axis=1)
+        full_state = tf.concat([ro_x_inp, enc_pred], axis=1)
 
-    ro_x_pred = interaction_net(full_state, n_objects, re_widths, sd_widths, agg_widths,
-                                effect_width, out_width)
-    ro_x_pred = tf.reshape(ro_x_pred, [-1, n_objects, out_width])
+        ro_x_pred = interaction_net(full_state, n_objects, re_widths, sd_widths, agg_widths,
+                                    effect_width, out_width)
+        ro_x_preds.append(ro_x_pred)
+        ro_x_inp = ro_x_pred
+
+    ro_x_pred = tf.stack([tf.reshape(x, [-1, n_objects, out_width]) for x in ro_x_preds], axis=1)
 
     return ro_x_pred
 

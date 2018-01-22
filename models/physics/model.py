@@ -18,7 +18,7 @@ from parser import parser
 from loader import PhysicsDataset
 from shared import log, get_enc_analysis
 
-OUT_WIDTH = 2
+OUT_WIDTH = 4
 
 class Model(object):
     def get_enc_pred(self, obs_x_true, y_true):
@@ -30,13 +30,13 @@ class Model(object):
         n_objects = tf.shape(obs_x_true)[2]
 
         if args.pred_only:
-            enc_pred = tf.reshape(y_true, [-1, n_objects, 1]) # TODO Hardcoded y_size.
+            enc_pred = tf.log(tf.reshape(y_true, [-1, n_objects, 1])) # TODO Hardcoded y_size.
         else:
             with tf.variable_scope("enc_net", reuse=tf.AUTO_REUSE):
                 # Shape: [batch_size, n_objects, enc_size]
                 enc_pred = gru_enc_net(obs_x_true, args.enc_lstm_widths, args.enc_dense_widths)
 
-                if args.ref_enc_sub:
+                if not args.no_ref_enc_sub:
                     enc_pred -= tf.tile(enc_pred[:,:1], [1, n_objects, 1])
 
                 if args.enc_only:
@@ -56,15 +56,18 @@ class Model(object):
         n_objects = int(ro_x_true.get_shape()[2])
         state_size = int(ro_x_true.get_shape()[3])
         enc_size = int(enc_pred.get_shape()[2])
-        # Shape: [batch_size * (n_ro_frames-1), n_objects, state_size]
-        ro_x_inp = tf.reshape(ro_x_true[:,:-1], [-1, n_objects, state_size])
-        enc_pred = tf.reshape(tf.tile(enc_pred, [1, n_ro_frames-1, 1]), [-1, n_objects, enc_size])
 
         if args.baseline:
-            ro_x_pred = ro_x_inp[:,:,2:] # extract just the velocities. 
+            # predict the output assuming constant velocity. 
+            first = ro_x_true[:,:-1] * self.dset.norm_x # first few frames
+            vel = first[:,:,:,2:] 
+            pad_vel = tf.concat([vel, tf.zeros(tf.shape(vel))], axis=3)
+            ro_x_pred = first + pad_vel
+            ro_x_pred /= self.dset.norm_x
         else:
             with tf.variable_scope("predict_net", reuse=tf.AUTO_REUSE):
-                ro_x_pred = predict_net(ro_x_inp, enc_pred, args.re_widths, args.sd_widths,
+                ro_x_inp = ro_x_true[:,0]
+                ro_x_pred = predict_net(ro_x_inp, enc_pred, n_ro_frames, args.re_widths, args.sd_widths,
                                         args.agg_widths, args.effect_width, OUT_WIDTH,
                                         noise_ratio=args.noise)
 
@@ -80,11 +83,10 @@ class Model(object):
 
     def get_pred_loss(self, ro_x_pred, ro_x_true):
         with tf.variable_scope("losses"):
-            ro_x_true_vel = ro_x_true[:,1:,:,2:]  # get velocity, removing first frame
             # MSE loss of ro_x_true_vel and ro_x_pred
             loss = tf.reduce_mean(tf.squared_difference(
-                    tf.reshape(ro_x_true_vel, [-1]),
-                    tf.reshape(ro_x_pred, [-1])))
+                ro_x_true[:,1:],
+                ro_x_pred))
             # TODO Pos loss from before. 
 
             self.summaries.append(tf.summary.scalar('loss', loss))
@@ -151,7 +153,7 @@ class TrainModel(Model):
             self.lr_val *= self.args.decay_factor
             log(self.args.log_dir, 'Decaying learning rate to {:.2E}'.format(self.lr_val))
 
-    def run(self, epoch, sess, writer, epochs_without_dec):
+    def run(self, train_ind, sess, writer, epochs_without_dec):
         self.set_learning_rate(epochs_without_dec)
         losses = []
         for ind, (obs_x_true, ro_x_true, y_true) in enumerate(self.dset.get_batches()):
@@ -163,7 +165,7 @@ class TrainModel(Model):
             })
 
             losses.append(loss_)
-            writer.add_summary(summary_, epoch + ind / self.batches_per_epoch)
+            writer.add_summary(summary_, train_ind + ind)
 
         log(self.args.log_dir, 'Train Loss: {:.4E}'.format(np.mean(losses)))
 
@@ -179,7 +181,7 @@ class TestModel(Model):
         self.build_model(train=False)
         self.epochs_wo_dec = 0
 
-    def run(self, epoch, sess, writer, save_encs=False, save_ro=False):
+    def run(self, train_ind, sess, writer, save_encs=False, save_ro=False):
         if save_ro:
             self.save_ro()
             return
@@ -196,7 +198,7 @@ class TestModel(Model):
             y_trues.append(y_true)
 
             if self.dset_name == 'test': # TODO add summary for all dsets, not just test
-                writer.add_summary(out[2], epoch + 1)
+                writer.add_summary(out[2], train_ind)
 
         loss = np.mean(losses)
         enc_pred = np.concatenate(enc_preds)

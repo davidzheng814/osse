@@ -90,15 +90,17 @@ def run(train_model, test_model, obj3_model, obj9_model, long_model, mass32_mode
             log(args.log_dir, 'Epoch: {} Log: {}'.format(epoch, folder_ind))
             start_time = time.time()
 
+            train_ind = (epoch-1) * train_model.batches_per_epoch # Set train_ind for train summaries.
             if not args.skip_train and not args.baseline:
-                train_model.run(epoch, sess, train_writer, test_model.epochs_wo_dec)
-            test_model.run(epoch, sess, test_writer, save_encs=True)
+                train_model.run(train_ind, sess, train_writer, test_model.epochs_wo_dec)
+            train_ind = epoch * train_model.batches_per_epoch # Set train_ind for test summaries.
+            test_model.run(train_ind, sess, test_writer, save_encs=True)
             #TODO None of these currently log to tensorboard
             #TODO Fix logging to look nicer, especially obj9 R^2
-            obj3_model.run(epoch, sess, test_writer, save_encs=True)
-            obj9_model.run(epoch, sess, test_writer, save_encs=True)
-            mass32_model.run(epoch, sess, test_writer, save_encs=True)
-            long_model.run(epoch, sess, test_writer, save_ro=True)
+            obj3_model.run(train_ind, sess, test_writer, save_encs=True)
+            obj9_model.run(train_ind, sess, test_writer, save_encs=True)
+            mass32_model.run(train_ind, sess, test_writer, save_encs=True)
+            long_model.run(train_ind, sess, test_writer, save_ro=True)
 
             epoch_time = time.time() - start_time
             log(args.log_dir, 'Time: {:.2f}s Epochs w/o Dec: {}\n'.format(epoch_time, test_model.epochs_wo_dec))

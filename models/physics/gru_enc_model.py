@@ -170,16 +170,16 @@ def gru_enc_net(enc_x, lstm_widths, dense_widths):
     h = tf.transpose(enc_x, [1, 0, 2, 3])
 
     # Add reference bit for first object
-    obj_hs = tf.unstack(h, axis=2)
-    def zero_or_one_append(i, obj_h):
-        if i == 0:
-            return tf.ones([tf.shape(obj_h)[0], tf.shape(obj_h)[1], 1])
-        else:
-            return tf.zeros([tf.shape(obj_h)[0], tf.shape(obj_h)[1], 1])
-    obj_hs = [tf.concat([obj_h, zero_or_one_append(i, obj_h)], 2)
-            for i, obj_h in enumerate(obj_hs)]
-    h = tf.stack(obj_hs, axis=2)
-    state_size += 1
+    # obj_hs = tf.unstack(h, axis=2)
+    # def zero_or_one_append(i, obj_h):
+    #     if i == 0:
+    #         return tf.ones([tf.shape(obj_h)[0], tf.shape(obj_h)[1], 1])
+    #     else:
+    #         return tf.zeros([tf.shape(obj_h)[0], tf.shape(obj_h)[1], 1])
+    # obj_hs = [tf.concat([obj_h, zero_or_one_append(i, obj_h)], 2)
+    #         for i, obj_h in enumerate(obj_hs)]
+    # h = tf.stack(obj_hs, axis=2)
+    # state_size += 1
 
     h = tf.reshape(h, [n_obs_frames, -1, state_size])
     multi_rnn_cell = MultiRNNCell([SymGRUCell(width, n_objects) for width in lstm_widths])

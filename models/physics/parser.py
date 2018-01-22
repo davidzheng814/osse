@@ -59,8 +59,8 @@ parser.add_argument('--long', action='store_true',
                     help='Whether to save a long rollout.')
 parser.add_argument('--ref-enc-zero', action='store_true',
                     help='Zero out reference object encoding')
-parser.add_argument('--ref-enc-sub', action='store_true',
-                    help='Zero out reference object encoding')
+parser.add_argument('--no-ref-enc-sub', action='store_true',
+                    help='Do not subtract reference object encoding')
 
 parser.add_argument('--epochs', type=int, default=500,
                     help='number of epochs')
