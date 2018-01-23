@@ -186,6 +186,9 @@ def inet_enc_net(enc_x, lstm_widths, dense_widths):
 
     enc = tf.reshape(enc, [-1, n_objects, dense_widths[-1] // n_objects])
 
+    # Subtract out first enc
+    enc -= tf.tile(enc[:,0:1,:], tf.constant([1, n_objects, 1], dtype=tf.int32))
+
     return enc
 
 def inet_enc_net2(enc_x, self_lstm_widths, pair_lstm_widths, self_pre_dense_widths,

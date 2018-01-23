@@ -53,11 +53,11 @@ def get_model_pred(obs_x_true, ro_x_true, n_ro_frames, reuse=False):
         return None, ro_x_pred, tf.constant(0.)
 
     with tf.variable_scope("enc_net", reuse=reuse):
-#        enc_pred = inet_enc_net(obs_x_true, args.enc_lstm_widths,
-#                args.enc_dense_widths)
-        enc_pred = inet_enc_net2(obs_x_true, args.enc_lstm_widths,
-                args.enc_lstm_widths, args.enc_pre_dense_widths,
-                args.enc_pre_dense_widths, args.enc_dense_widths)
+        enc_pred = inet_enc_net(obs_x_true, args.enc_lstm_widths,
+                args.enc_dense_widths)
+#        enc_pred = inet_enc_net2(obs_x_true, args.enc_lstm_widths,
+#                args.enc_lstm_widths, args.enc_pre_dense_widths,
+#                args.enc_pre_dense_widths, args.enc_dense_widths)
 
         if args.enc_only:
             return enc_pred
