@@ -27,10 +27,11 @@ def relation_net(x, re_widths, effect_width):
         h = mlp(h, re_widths+[effect_width])
 
     h = tf.reshape(h, [-1, n_objects-1, n_objects, effect_width])
+    reg_loss = tf.nn.l2_loss(h)
     h = tf.reduce_sum(h, axis=1)
     h = tf.reshape(h, [-1, effect_width])
 
-    return h
+    return h, reg_loss
 
 def interaction_net(x, n_objects, re_widths, sd_widths, agg_widths, effect_width, out_width):
     """InteractionNet computes new object codes from previous object codes.
@@ -42,19 +43,19 @@ def interaction_net(x, n_objects, re_widths, sd_widths, agg_widths, effect_width
     full_state_size = int(x.get_shape()[1])
 
     with tf.variable_scope("re_net"): # Relation Network
-        pair_dynamics = relation_net(tf.reshape(x, [-1, n_objects, full_state_size]), re_widths, effect_width)
+        pair_dynamics, reg_loss = relation_net(tf.reshape(x, [-1, n_objects, full_state_size]), re_widths, effect_width)
 
     with tf.variable_scope("sd_net"): # Self-Dynamics Network
         self_dynamics = mlp(x, sd_widths + [effect_width])
 
     with tf.variable_scope("effects"):
-        effects = pair_dynamics + self_dynamics
+        tot_dynamics = pair_dynamics + self_dynamics
 
     with tf.variable_scope("agg"): # Aggregation Network
-        inp = tf.concat([x, effects], axis=1)
+        inp = tf.concat([x, tot_dynamics], axis=1)
         pred = mlp(inp, agg_widths + [out_width]) # Hardcoded desired output
 
-    return pred
+    return pred, reg_loss
 
 def predict_net(ro_x_inp, enc_pred, n_ro_frames, re_widths, sd_widths, agg_widths, effect_width,
                 out_width, noise_ratio=0.0):
@@ -76,6 +77,7 @@ def predict_net(ro_x_inp, enc_pred, n_ro_frames, re_widths, sd_widths, agg_width
     ro_x_inp = tf.reshape(ro_x_inp, [-1, state_size]) # [batch_size*n_objects, state_size]
 
     ro_x_preds = [] # all pred frames
+    reg_loss = tf.zeros([])
     for i in range(1, n_ro_frames):
         if noise_ratio > 0.:
             state_mean, state_var = tf.nn.moments(ro_x_inp, [0])
@@ -87,12 +89,14 @@ def predict_net(ro_x_inp, enc_pred, n_ro_frames, re_widths, sd_widths, agg_width
 
         full_state = tf.concat([ro_x_inp, enc_pred], axis=1)
 
-        ro_x_pred = interaction_net(full_state, n_objects, re_widths, sd_widths, agg_widths,
+        ro_x_pred, reg_loss_ = interaction_net(full_state, n_objects, re_widths, sd_widths, agg_widths,
                                     effect_width, out_width)
         ro_x_preds.append(ro_x_pred)
+        reg_loss += reg_loss_
         ro_x_inp = ro_x_pred
 
+    reg_loss /= n_ro_frames-1 # normalize after summing
     ro_x_pred = tf.stack([tf.reshape(x, [-1, n_objects, out_width]) for x in ro_x_preds], axis=1)
 
-    return ro_x_pred
+    return ro_x_pred, reg_loss
 

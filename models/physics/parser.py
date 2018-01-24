@@ -66,8 +66,10 @@ parser.add_argument('--epochs', type=int, default=500,
                     help='number of epochs')
 parser.add_argument('--batch-size', type=int, default=1024,
                     help='batch size')
-parser.add_argument('--lr', type=float, default=5e-4,
+parser.add_argument('--lr', type=float, default=2e-3,
                     help='learning rate')
+parser.add_argument('--reg-factor', type=float, default=0.,
+                    help='L2 Regularization on effects')
 parser.add_argument('--decay-cutoff', type=int, default=-1,
                     help='if loss does not improve for this number of epochs, both'
                          'learning rates are decreased by factor --decay-factor')

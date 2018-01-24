@@ -67,11 +67,11 @@ class Model(object):
         else:
             with tf.variable_scope("predict_net", reuse=tf.AUTO_REUSE):
                 ro_x_inp = ro_x_true[:,0]
-                ro_x_pred = predict_net(ro_x_inp, enc_pred, n_ro_frames, args.re_widths, args.sd_widths,
+                ro_x_pred, reg_loss = predict_net(ro_x_inp, enc_pred, n_ro_frames, args.re_widths, args.sd_widths,
                                         args.agg_widths, args.effect_width, OUT_WIDTH,
                                         noise_ratio=args.noise)
 
-        return ro_x_pred
+        return ro_x_pred, reg_loss
 
     def get_enc_loss(self, enc_pred, y_true):
         with tf.variable_scope("enc_losses"):
@@ -89,7 +89,7 @@ class Model(object):
                 ro_x_pred))
             # TODO Pos loss from before. 
 
-            self.summaries.append(tf.summary.scalar('loss', loss))
+            self.summaries.append(tf.summary.scalar('pred_loss', loss))
 
         return loss
 
@@ -110,12 +110,15 @@ class Model(object):
         self.lr = tf.placeholder(tf.float32, [], name="lr")
 
         self.enc_pred = self.get_enc_pred(self.obs_x_true, self.y_true)
-        self.ro_x_pred = self.get_ro_pred(self.ro_x_true, self.enc_pred)
 
         if self.args.enc_only:
             self.loss = self.get_enc_loss(self.enc_pred, self.y_true)
         else:
-            self.loss = self.get_pred_loss(self.ro_x_pred, self.ro_x_true)
+            self.ro_x_pred, self.reg_loss = self.get_ro_pred(self.ro_x_true, self.enc_pred)
+            self.pred_loss = self.get_pred_loss(self.ro_x_pred, self.ro_x_true)
+            self.loss = self.args.reg_factor * self.reg_loss + self.pred_loss
+            self.summaries.append(tf.summary.scalar('reg_loss', self.reg_loss))
+            self.summaries.append(tf.summary.scalar('loss', self.loss))
 
         if not self.args.baseline and train:
             self.optim = self.get_optim(self.lr)
@@ -155,19 +158,20 @@ class TrainModel(Model):
 
     def run(self, train_ind, sess, writer, epochs_without_dec):
         self.set_learning_rate(epochs_without_dec)
-        losses = []
+        reg_losses, pred_losses = [], []
         for ind, (obs_x_true, ro_x_true, y_true) in enumerate(self.dset.get_batches()):
-            loss_, summary_, optim_ = sess.run([self.loss, self.summary, self.optim], feed_dict={
+            reg_loss, pred_loss, summary, _ = sess.run([self.reg_loss, self.pred_loss, self.summary, self.optim], feed_dict={
                 self.obs_x_true:obs_x_true,
                 self.ro_x_true:ro_x_true,
                 self.y_true:y_true,
                 self.lr:self.lr_val
             })
 
-            losses.append(loss_)
-            writer.add_summary(summary_, train_ind + ind)
+            reg_losses.append(reg_loss)
+            pred_losses.append(pred_loss)
+            writer.add_summary(summary, train_ind + ind)
 
-        log(self.args.log_dir, 'Train Loss: {:.4E}'.format(np.mean(losses)))
+        log(self.args.log_dir, 'Train - Reg Loss: {:.4E} Pred Loss: {:.4E}'.format(np.mean(reg_losses), np.mean(pred_losses)))
 
 class TestModel(Model):
     def __init__(self, args, dset_name, norm_x):
@@ -186,33 +190,35 @@ class TestModel(Model):
             self.save_ro()
             return
 
-        losses, enc_preds, y_trues = [], [], []
+        reg_losses, pred_losses, enc_preds, y_trues = [], [], [], []
         for obs_x_true, ro_x_true, y_true in self.dset.get_batches():
-            out = sess.run([self.loss, self.enc_pred, self.summary], feed_dict={
+            out = sess.run([self.reg_loss, self.pred_loss, self.enc_pred, self.summary], feed_dict={
                 self.obs_x_true:obs_x_true,
                 self.ro_x_true:ro_x_true,
                 self.y_true:y_true,
             })
-            losses.append(out[0])
-            enc_preds.append(out[1])
+            reg_losses.append(out[0])
+            pred_losses.append(out[1])
+            enc_preds.append(out[2])
             y_trues.append(y_true)
 
             if self.dset_name == 'test': # TODO add summary for all dsets, not just test
-                writer.add_summary(out[2], train_ind)
+                writer.add_summary(out[3], train_ind)
 
-        loss = np.mean(losses)
+        reg_loss = np.mean(reg_losses)
+        pred_loss = np.mean(pred_losses)
         enc_pred = np.concatenate(enc_preds)
         y_true = np.concatenate(y_trues)
 
-        log(self.args.log_dir, 'Dset: {} Loss: {:.4E}'.format(self.dset_name, loss))
+        log(self.args.log_dir, 'Dset: {} Reg Loss: {:.4E} Pred Loss: {:.4E}'.format(self.dset_name, reg_loss, pred_loss))
 
         if save_encs: # Saves and analyzes encodings
             self.save_encs(enc_pred, y_true)
 
         # Update epochs_wo_dec
-        if loss < self.best_loss:
+        if pred_loss < self.best_loss:
             self.epochs_wo_dec = 0
-            self.best_loss = loss
+            self.best_loss = pred_loss
         else:
             self.epochs_wo_dec += 1
 
