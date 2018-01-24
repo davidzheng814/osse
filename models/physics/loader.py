@@ -54,6 +54,9 @@ class PhysicsDataset(object):
 
         self.y_size = self.y.shape[1] // self.n_objects
 
+        self.y = np.log(self.y)
+        self.y -= self.y[:,0:1]
+
     def __len__(self):
         return self.num_points
 
