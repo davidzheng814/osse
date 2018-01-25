@@ -68,6 +68,8 @@ parser.add_argument('--batch-size', type=int, default=1024,
                     help='batch size')
 parser.add_argument('--lr', type=float, default=2e-3,
                     help='learning rate')
+parser.add_argument('--enc-reg-factor', type=float, default=0.,
+                    help='L2 Regularization on effects if using inet_enc_model')
 parser.add_argument('--reg-factor', type=float, default=0.,
                     help='L2 Regularization on effects')
 parser.add_argument('--decay-cutoff', type=int, default=-1,
@@ -81,6 +83,8 @@ parser.add_argument('--enc-lstm-widths', type=int, default=[36, 36, 36, 36],
                     nargs='+', help='EncNet widths')
 parser.add_argument('--enc-dense-widths', type=int, default=[12, 12, 15],
                     nargs='+', help='TransNet widths')
+parser.add_argument('--inet-pred-frames', type=int, default=2,
+                    help='Number of pred frames to combine for inet_enc_model')
 
 parser.add_argument('--re-widths', type=int, default=[150, 150, 150, 150],
                     nargs='+', help='RelationNet widths')

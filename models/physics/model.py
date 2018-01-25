@@ -13,6 +13,7 @@ import numpy as np
 from sklearn.linear_model import LinearRegression
 
 from gru_enc_model import gru_enc_net
+from inet_enc_model import inet_enc_net
 from pred_model import predict_net
 from parser import parser
 from loader import PhysicsDataset
@@ -34,13 +35,16 @@ class Model(object):
         else:
             with tf.variable_scope("enc_net", reuse=tf.AUTO_REUSE):
                 # Shape: [batch_size, n_objects, enc_size]
-                enc_pred = gru_enc_net(obs_x_true, args.enc_lstm_widths, args.enc_dense_widths)
+                # enc_pred = gru_enc_net(obs_x_true, args.enc_lstm_widths, args.enc_dense_widths)
+                assert len(args.enc_dense_widths) == 1
+                enc_pred, enc_reg = inet_enc_net(obs_x_true, args.re_widths, args.sd_widths,
+                                        args.agg_widths, args.effect_width, args.enc_dense_widths[-1], args.inet_pred_frames)
 
                 if not args.no_ref_enc_sub:
                     enc_pred -= tf.tile(enc_pred[:,:1], [1, n_objects, 1])
 
                 if args.enc_only:
-                    return enc_pred
+                    return enc_pred, enc_reg
 
         return enc_pred
 
@@ -109,11 +113,14 @@ class Model(object):
         self.y_true = tf.placeholder(tf.float32, [None, self.dset.n_objects], name="y_true")
         self.lr = tf.placeholder(tf.float32, [], name="lr")
 
-        self.enc_pred = self.get_enc_pred(self.obs_x_true, self.y_true)
+        out = self.get_enc_pred(self.obs_x_true, self.y_true)
 
         if self.args.enc_only:
-            self.loss = self.get_enc_loss(self.enc_pred, self.y_true)
+            self.enc_pred, self.enc_reg_loss = out
+            self.pred_loss = self.get_enc_loss(self.enc_pred, self.y_true)
+            self.loss = self.pred_loss + self.args.enc_reg_factor * self.enc_reg_loss
         else:
+            self.enc_pred = out
             self.ro_x_pred, self.reg_loss = self.get_ro_pred(self.ro_x_true, self.enc_pred)
             self.pred_loss = self.get_pred_loss(self.ro_x_pred, self.ro_x_true)
             self.loss = self.args.reg_factor * self.reg_loss + self.pred_loss
@@ -160,12 +167,22 @@ class TrainModel(Model):
         self.set_learning_rate(epochs_without_dec)
         reg_losses, pred_losses = [], []
         for ind, (obs_x_true, ro_x_true, y_true) in enumerate(self.dset.get_batches()):
-            reg_loss, pred_loss, summary, _ = sess.run([self.reg_loss, self.pred_loss, self.summary, self.optim], feed_dict={
-                self.obs_x_true:obs_x_true,
-                self.ro_x_true:ro_x_true,
-                self.y_true:y_true,
-                self.lr:self.lr_val
-            })
+            if not self.args.enc_only:
+                reg_loss, pred_loss, summary, _ = sess.run([self.reg_loss, self.pred_loss, self.summary, self.optim], feed_dict={
+                    self.obs_x_true:obs_x_true,
+                    self.ro_x_true:ro_x_true,
+                    self.y_true:y_true,
+                    self.lr:self.lr_val
+                })
+            else:
+                # TODO: This isn't really pred loss but enc loss, but report for simplicity
+                reg_loss, pred_loss, summary, _ = sess.run([self.enc_reg_loss, self.pred_loss, self.summary, self.optim],
+                    feed_dict={
+                        self.obs_x_true:obs_x_true,
+                        self.ro_x_true:ro_x_true,
+                        self.y_true:y_true,
+                        self.lr:self.lr_val
+                    })
 
             reg_losses.append(reg_loss)
             pred_losses.append(pred_loss)
@@ -192,18 +209,28 @@ class TestModel(Model):
 
         reg_losses, pred_losses, enc_preds, y_trues = [], [], [], []
         for obs_x_true, ro_x_true, y_true in self.dset.get_batches():
-            out = sess.run([self.reg_loss, self.pred_loss, self.enc_pred, self.summary], feed_dict={
-                self.obs_x_true:obs_x_true,
-                self.ro_x_true:ro_x_true,
-                self.y_true:y_true,
-            })
-            reg_losses.append(out[0])
-            pred_losses.append(out[1])
-            enc_preds.append(out[2])
+            if not self.args.enc_only:
+                reg_loss, pred_loss, enc_pred, summary = sess.run([self.reg_loss, self.pred_loss, self.enc_pred, self.summary], feed_dict={
+                    self.obs_x_true:obs_x_true,
+                    self.ro_x_true:ro_x_true,
+                    self.y_true:y_true,
+                })
+            else:
+                # TODO: This isn't really pred loss but enc loss, but report for simplicity
+                reg_loss, pred_loss, enc_pred, summary = sess.run([self.enc_reg_loss, self.pred_loss, self.enc_pred, self.summary],
+                    feed_dict={
+                        self.obs_x_true:obs_x_true,
+                        self.ro_x_true:ro_x_true,
+                        self.y_true:y_true,
+                    })
+
+            reg_losses.append(reg_loss)
+            pred_losses.append(pred_loss)
+            enc_preds.append(enc_pred)
             y_trues.append(y_true)
 
             if self.dset_name == 'test': # TODO add summary for all dsets, not just test
-                writer.add_summary(out[3], train_ind)
+                writer.add_summary(summary, train_ind)
 
         reg_loss = np.mean(reg_losses)
         pred_loss = np.mean(pred_losses)
