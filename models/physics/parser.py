@@ -78,6 +78,8 @@ parser.add_argument('--decay-cutoff', type=int, default=-1,
 parser.add_argument('--decay-factor', type=float, default=0.8,
                     help='ratio to cut learning rate by after --decay-cutoff reached')
 parser.add_argument('--noise', type=float, default=0, help="specify standard deviation of noise (as ratio of standard deviation of state elements).")
+parser.add_argument('--grad-clip', type=float, default=5.,
+                    help='maximum norm of gradients for clipping. set to 0 for no clip')
 
 parser.add_argument('--enc-lstm-widths', type=int, default=[36, 36, 36, 36],
                     nargs='+', help='EncNet widths')

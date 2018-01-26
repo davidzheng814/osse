@@ -99,7 +99,13 @@ class Model(object):
 
     def get_optim(self, lr):
         with tf.variable_scope("optim"):
-            optim = tf.train.AdamOptimizer(learning_rate=lr).minimize(self.loss)
+            if self.args.grad_clip > 0:
+                optim = tf.train.AdamOptimizer(learning_rate=lr)
+                grads = optim.compute_gradients(self.loss)
+                clipped_grads = [(tf.clip_by_norm(grad, self.args.grad_clip), var) for grad, var in grads]
+                optim = optim.apply_gradients(clipped_grads)
+            else:
+                optim = tf.train.AdamOptimizer(learning_rate=lr).minimize(self.loss)
         return optim
 
     def build_model(self, train=False):
