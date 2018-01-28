@@ -47,7 +47,6 @@ def get_enc_analysis(enc_pred, y_true):
     for obj_ind in range(enc_pred.shape[1]):
         X = enc_pred[:,obj_ind]
         y = y_true[:,obj_ind]
-        y = np.log(y)
 
         model = LinearRegression()
         model.fit(X, y)

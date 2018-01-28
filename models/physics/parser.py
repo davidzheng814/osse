@@ -66,8 +66,10 @@ parser.add_argument('--epochs', type=int, default=500,
                     help='number of epochs')
 parser.add_argument('--batch-size', type=int, default=1024,
                     help='batch size')
-parser.add_argument('--lr', type=float, default=2e-3,
+parser.add_argument('--lr', type=float, default=5e-4,
                     help='learning rate')
+parser.add_argument('--enc-reg-factor', type=float, default=0.,
+                    help='L2 Regularization on effects if using inet_enc_model')
 parser.add_argument('--reg-factor', type=float, default=0.,
                     help='L2 Regularization on effects')
 parser.add_argument('--decay-cutoff', type=int, default=-1,
@@ -79,15 +81,26 @@ parser.add_argument('--noise', type=float, default=0, help="specify standard dev
 
 parser.add_argument('--enc-lstm-widths', type=int, default=[36, 36, 36, 36],
                     nargs='+', help='EncNet widths')
-parser.add_argument('--enc-dense-widths', type=int, default=[12, 12, 15],
+parser.add_argument('--enc-re-widths', type=int, default=[75, 75, 75],
+                    nargs='+', help='RelationNet widths')
+parser.add_argument('--enc-sd-widths', type=int, default=[50, 50],
+                    nargs='+', help='SelfDynamicsNet widths')
+parser.add_argument('--enc-effect-width', type=int, default=50,
+                    help='Width of effect (output of relation net and sd net)')
+parser.add_argument('--enc-agg-widths', type=int, default=[50, 50],
+                    nargs='+', help='AggregationNet widths')
+parser.add_argument('--enc-code-width', type=int, default=25,
+                    help='Width of encoding during inet')
+parser.add_argument('--enc-dense-widths', type=int, default=[15, 15, 15],
                     nargs='+', help='TransNet widths')
 
-parser.add_argument('--re-widths', type=int, default=[150, 150, 150, 150],
+parser.add_argument('--re-widths', type=int, default=[100, 100, 100, 100],
                     nargs='+', help='RelationNet widths')
-parser.add_argument('--sd-widths', type=int, default=[100, 100],
+parser.add_argument('--sd-widths', type=int, default=[50, 50],
                     nargs='+', help='SelfDynamicsNet widths')
 parser.add_argument('--effect-width', type=int, default=50,
                     help='Width of effect (output of relation net and sd net)')
-parser.add_argument('--agg-widths', type=int, default=[100, 50],
+parser.add_argument('--agg-widths', type=int, default=[50, 50],
                     nargs='+', help='AggregationNet widths')
+
 

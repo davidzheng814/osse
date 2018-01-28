@@ -12,7 +12,8 @@ import tensorflow as tf
 import numpy as np
 from sklearn.linear_model import LinearRegression
 
-from gru_enc_model import gru_enc_net
+# from gru_enc_model import gru_enc_net
+from inet_enc_model import inet_enc_net
 from pred_model import predict_net
 from parser import parser
 from loader import PhysicsDataset
@@ -31,18 +32,21 @@ class Model(object):
 
         if args.pred_only:
             enc_pred = tf.log(tf.reshape(y_true, [-1, n_objects, 1])) # TODO Hardcoded y_size.
+            enc_reg = tf.zeros([])
         else:
             with tf.variable_scope("enc_net", reuse=tf.AUTO_REUSE):
                 # Shape: [batch_size, n_objects, enc_size]
-                enc_pred = gru_enc_net(obs_x_true, args.enc_lstm_widths, args.enc_dense_widths)
+                # TODO: integrate enc_reg
+                # assert len(args.enc_dense_widths) == 1
+                # enc_pred = gru_enc_net(obs_x_true, args.enc_lstm_widths, args.enc_dense_widths)
+                enc_pred, enc_reg = inet_enc_net(obs_x_true, args.enc_re_widths, args.enc_sd_widths,
+                                        args.enc_agg_widths, args.enc_effect_width, args.enc_code_width, args.enc_dense_widths)
+                # enc_reg += 1e-2 * tf.add_n([tf.nn.l2_loss(v) for v in tf.trainable_variables() if 'bias' not in v.name])
 
                 if not args.no_ref_enc_sub:
                     enc_pred -= tf.tile(enc_pred[:,:1], [1, n_objects, 1])
 
-                if args.enc_only:
-                    return enc_pred
-
-        return enc_pred
+        return enc_pred, enc_reg
 
     def get_ro_pred(self, ro_x_true, enc_pred):
         """Returns ro_x_pred
@@ -95,7 +99,9 @@ class Model(object):
 
     def get_optim(self, lr):
         with tf.variable_scope("optim"):
-            optim = tf.train.AdamOptimizer(learning_rate=lr).minimize(self.loss)
+            optim = tf.train.AdamOptimizer(learning_rate=lr)
+            gvs = optim.compute_gradients(self.loss)
+            optim = optim.apply_gradients(gvs)
         return optim
 
     def build_model(self, train=False):
@@ -109,14 +115,15 @@ class Model(object):
         self.y_true = tf.placeholder(tf.float32, [None, self.dset.n_objects], name="y_true")
         self.lr = tf.placeholder(tf.float32, [], name="lr")
 
-        self.enc_pred = self.get_enc_pred(self.obs_x_true, self.y_true)
+        self.enc_pred, self.enc_reg_loss = self.get_enc_pred(self.obs_x_true, self.y_true)
 
         if self.args.enc_only:
-            self.loss = self.get_enc_loss(self.enc_pred, self.y_true)
+            self.pred_loss = self.get_enc_loss(self.enc_pred, self.y_true)
+            self.loss = self.pred_loss + self.args.enc_reg_factor * self.enc_reg_loss
         else:
             self.ro_x_pred, self.reg_loss = self.get_ro_pred(self.ro_x_true, self.enc_pred)
             self.pred_loss = self.get_pred_loss(self.ro_x_pred, self.ro_x_true)
-            self.loss = self.args.reg_factor * self.reg_loss + self.pred_loss
+            self.loss = self.args.enc_reg_factor * self.enc_reg_loss + self.args.reg_factor * self.reg_loss + self.pred_loss
             self.summaries.append(tf.summary.scalar('reg_loss', self.reg_loss))
             self.summaries.append(tf.summary.scalar('loss', self.loss))
 
@@ -158,20 +165,41 @@ class TrainModel(Model):
 
     def run(self, train_ind, sess, writer, epochs_without_dec):
         self.set_learning_rate(epochs_without_dec)
-        reg_losses, pred_losses = [], []
+        enc_reg_losses, reg_losses, pred_losses = [], [], []
         for ind, (obs_x_true, ro_x_true, y_true) in enumerate(self.dset.get_batches()):
-            reg_loss, pred_loss, summary, _ = sess.run([self.reg_loss, self.pred_loss, self.summary, self.optim], feed_dict={
-                self.obs_x_true:obs_x_true,
-                self.ro_x_true:ro_x_true,
-                self.y_true:y_true,
-                self.lr:self.lr_val
-            })
+            if not self.args.enc_only:
+                enc_reg_loss, reg_loss, pred_loss, summary, _ = sess.run([self.enc_reg_loss, self.reg_loss, self.pred_loss, self.summary, self.optim], feed_dict={
+                    self.obs_x_true:obs_x_true,
+                    self.ro_x_true:ro_x_true,
+                    self.y_true:y_true,
+                    self.lr:self.lr_val
+                })
+                reg_losses.append(reg_loss)
+            else:
+                # TODO: This isn't really pred loss but enc loss, but report for simplicity
+                enc_reg_loss, pred_loss, summary, _ = sess.run([self.enc_reg_loss, self.pred_loss, self.summary, self.optim],
+                    feed_dict={
+                        self.obs_x_true:obs_x_true,
+                        self.ro_x_true:ro_x_true,
+                        self.y_true:y_true,
+                        self.lr:self.lr_val
+                    })
 
-            reg_losses.append(reg_loss)
+            enc_reg_losses.append(enc_reg_loss)
             pred_losses.append(pred_loss)
             writer.add_summary(summary, train_ind + ind)
 
-        log(self.args.log_dir, 'Train - Reg Loss: {:.4E} Pred Loss: {:.4E}'.format(np.mean(reg_losses), np.mean(pred_losses)))
+        if not self.args.enc_only:
+            log(self.args.log_dir,
+                'Train - Enc Reg Loss: {:.4E} Reg Loss: {:.4E} Pred Loss: {:.4E}'.format(
+                    np.mean(enc_reg_losses),
+                    np.mean(reg_losses),
+                    np.mean(pred_losses)))
+        else:
+            log(self.args.log_dir,
+                'Train - Enc Reg Loss: {:.4E} Pred Loss: {:.4E}'.format(
+                    np.mean(enc_reg_losses),
+                    np.mean(pred_losses)))
 
 class TestModel(Model):
     def __init__(self, args, dset_name, norm_x):
@@ -190,27 +218,51 @@ class TestModel(Model):
             self.save_ro()
             return
 
-        reg_losses, pred_losses, enc_preds, y_trues = [], [], [], []
+        enc_reg_losses, reg_losses, pred_losses, enc_preds, y_trues = [], [], [], [], []
         for obs_x_true, ro_x_true, y_true in self.dset.get_batches():
-            out = sess.run([self.reg_loss, self.pred_loss, self.enc_pred, self.summary], feed_dict={
-                self.obs_x_true:obs_x_true,
-                self.ro_x_true:ro_x_true,
-                self.y_true:y_true,
-            })
-            reg_losses.append(out[0])
-            pred_losses.append(out[1])
-            enc_preds.append(out[2])
+            if not self.args.enc_only:
+                enc_reg_loss, reg_loss, pred_loss, enc_pred, summary = sess.run([self.enc_reg_loss, self.reg_loss, self.pred_loss, self.enc_pred, self.summary], feed_dict={
+                    self.obs_x_true:obs_x_true,
+                    self.ro_x_true:ro_x_true,
+                    self.y_true:y_true,
+                })
+                reg_losses.append(reg_loss)
+            else:
+                # TODO: This isn't really pred loss but enc loss, but report for simplicity
+                enc_reg_loss, pred_loss, enc_pred, summary = sess.run([self.enc_reg_loss, self.pred_loss, self.enc_pred, self.summary],
+                    feed_dict={
+                        self.obs_x_true:obs_x_true,
+                        self.ro_x_true:ro_x_true,
+                        self.y_true:y_true,
+                    })
+
+            enc_reg_losses.append(enc_reg_loss)
+            pred_losses.append(pred_loss)
+            enc_preds.append(enc_pred)
             y_trues.append(y_true)
 
             if self.dset_name == 'test': # TODO add summary for all dsets, not just test
-                writer.add_summary(out[3], train_ind)
+                writer.add_summary(summary, train_ind)
 
-        reg_loss = np.mean(reg_losses)
+        enc_reg_loss = np.mean(enc_reg_losses)
         pred_loss = np.mean(pred_losses)
         enc_pred = np.concatenate(enc_preds)
         y_true = np.concatenate(y_trues)
 
-        log(self.args.log_dir, 'Dset: {} Reg Loss: {:.4E} Pred Loss: {:.4E}'.format(self.dset_name, reg_loss, pred_loss))
+        if not self.args.enc_only:
+            reg_loss = np.mean(reg_losses)
+            log(self.args.log_dir,
+                '{} - Enc Reg Loss: {:.4E} Reg Loss: {:.4E} Pred Loss: {:.4E}'.format(
+                    self.dset_name,
+                    enc_reg_loss,
+                    reg_loss,
+                    pred_loss))
+        else:
+            log(self.args.log_dir,
+                '{} - Enc Reg Loss: {:.4E} Pred Loss: {:.4E}'.format(
+                    self.dset_name,
+                    enc_reg_loss,
+                    pred_loss))
 
         if save_encs: # Saves and analyzes encodings
             self.save_encs(enc_pred, y_true)
