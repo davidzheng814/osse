@@ -75,11 +75,12 @@ def inet_enc_net(enc_x, re_widths, sd_widths, agg_widths, effect_width,
     reg_losses = []
     frames_per_step = 2 # How many frames to use per timestep. 
     for start_frame in range(n_obs_frames-frames_per_step+1):
-        full_state = tf.concat(enc_xs[start_frame:start_frame+frames_per_step] + [enc], axis=1)
+        with tf.variable_scope("enc_inet", reuse=(start_frame != 0)):
+            full_state = tf.concat(enc_xs[start_frame:start_frame+frames_per_step] + [enc], axis=1)
 
-        enc, reg_loss = interaction_net(full_state, n_objects, re_widths, sd_widths, agg_widths,
-                 effect_width, code_width)
-        reg_losses.append(reg_loss)
+            enc, reg_loss = interaction_net(full_state, n_objects, re_widths, sd_widths, agg_widths,
+                     effect_width, code_width)
+            reg_losses.append(reg_loss)
 
     reg_loss = tf.reduce_mean(reg_losses)
 
