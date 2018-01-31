@@ -1,8 +1,8 @@
 import argparse
 from os.path import join
 
-# DATAROOT = '/om/user/dzd123/'
-DATAROOT = '/data/vision/oliva/scenedataset/urops/scenelayout/'
+DATAROOT = '/om/user/dzd123/'
+# DATAROOT = '/data/vision/oliva/scenedataset/urops/scenelayout/'
 ROOT = '../..'
 parser = argparse.ArgumentParser(description='Physics mass inference model.')
 

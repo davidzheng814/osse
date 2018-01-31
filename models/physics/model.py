@@ -34,7 +34,7 @@ class Model(object):
             enc_pred = tf.log(tf.reshape(y_true, [-1, n_objects, 1])) # TODO Hardcoded y_size.
             enc_reg = tf.zeros([])
         else:
-            with tf.variable_scope("enc_net", reuse=tf.AUTO_REUSE):
+            with tf.variable_scope("enc_net", reuse=self.reuse):
                 # Shape: [batch_size, n_objects, enc_size]
                 # TODO: integrate enc_reg
                 # assert len(args.enc_dense_widths) == 1
@@ -69,7 +69,7 @@ class Model(object):
             ro_x_pred = first + pad_vel
             ro_x_pred /= self.dset.norm_x
         else:
-            with tf.variable_scope("predict_net", reuse=tf.AUTO_REUSE):
+            with tf.variable_scope("predict_net", reuse=self.reuse):
                 ro_x_inp = ro_x_true[:,0]
                 ro_x_pred, reg_loss = predict_net(ro_x_inp, enc_pred, n_ro_frames, args.re_widths, args.sd_widths,
                                         args.agg_widths, args.effect_width, OUT_WIDTH,
@@ -147,6 +147,7 @@ class TrainModel(Model):
     def __init__(self, args):
         self.args = args
         self.lr_val = self.args.lr
+        self.reuse = False
 
         assert args.num_points == 0 or args.num_points > args.test_points
         self.dset = PhysicsDataset(args.data_file, 'train',
@@ -208,6 +209,7 @@ class TestModel(Model):
             batch_size=args.batch_size,
             num_points=args.test_points,
             norm_x=norm_x)
+        self.reuse = True
         self.best_loss = float('inf')
         self.dset_name = dset_name
         self.build_model(train=False)

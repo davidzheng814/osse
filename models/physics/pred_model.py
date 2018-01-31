@@ -79,21 +79,22 @@ def predict_net(ro_x_inp, enc_pred, n_ro_frames, re_widths, sd_widths, agg_width
     ro_x_preds = [] # all pred frames
     reg_loss = tf.zeros([])
     for i in range(1, n_ro_frames):
-        if noise_ratio > 0.:
-            state_mean, state_var = tf.nn.moments(ro_x_inp, [0])
-            state_std = tf.unstack(tf.sqrt(state_var))
-            noise = [tf.random_normal(shape=tf.shape(ro_x_inp)[:-1], mean=0.0,
-                stddev=noise_ratio * element_std) for element_std in state_std]
-            noise = tf.stack(noise, axis=1)
-            ro_x_inp += noise
+        with tf.variable_scope("pred_inet", reuse=(i != 1)):
+            if noise_ratio > 0.:
+                state_mean, state_var = tf.nn.moments(ro_x_inp, [0])
+                state_std = tf.unstack(tf.sqrt(state_var))
+                noise = [tf.random_normal(shape=tf.shape(ro_x_inp)[:-1], mean=0.0,
+                    stddev=noise_ratio * element_std) for element_std in state_std]
+                noise = tf.stack(noise, axis=1)
+                ro_x_inp += noise
 
-        full_state = tf.concat([ro_x_inp, enc_pred], axis=1)
+            full_state = tf.concat([ro_x_inp, enc_pred], axis=1)
 
-        ro_x_pred, reg_loss_ = interaction_net(full_state, n_objects, re_widths, sd_widths, agg_widths,
-                                    effect_width, out_width)
-        ro_x_preds.append(ro_x_pred)
-        reg_loss += reg_loss_
-        ro_x_inp = ro_x_pred
+            ro_x_pred, reg_loss_ = interaction_net(full_state, n_objects, re_widths, sd_widths, agg_widths,
+                                        effect_width, out_width)
+            ro_x_preds.append(ro_x_pred)
+            reg_loss += reg_loss_
+            ro_x_inp = ro_x_pred
 
     reg_loss /= n_ro_frames-1 # normalize after summing
     ro_x_pred = tf.stack([tf.reshape(x, [-1, n_objects, out_width]) for x in ro_x_preds], axis=1)

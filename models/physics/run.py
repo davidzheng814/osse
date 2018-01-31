@@ -39,16 +39,24 @@ if args.restore:
             print("Shutil error but continuing: {}".format(e))
     else:
         folder_ind = basename(os.path.dirname(args.restore))
-else:
-    folder_ind = str(max([int(x) for x in os.listdir(args.log_dir)]) + 1)
 
-args.log_dir = join(args.log_dir, folder_ind)
-args.ckpt_dir = join(args.ckpt_dir, folder_ind)
+    args.log_dir = join(args.log_dir, folder_ind)
+    args.ckpt_dir = join(args.ckpt_dir, folder_ind)
 
-if args.restore:
     log(args.log_dir, "Reloading:", folder_ind)
 else:
-    os.mkdir(args.log_dir)
+    while True:
+        folder_ind = str(max([int(x) for x in os.listdir(args.ckpt_dir)]
+                            +[int(x) for x in os.listdir(args.log_dir)]) + 1)
+        args.log_dir = join(args.log_dir, folder_ind)
+        args.ckpt_dir = join(args.ckpt_dir, folder_ind)
+
+        try:
+            os.mkdir(args.ckpt_dir)
+            os.mkdir(args.log_dir)
+            break
+        except FileExistsError:
+            pass
 
 """ BUILD MODELS """
 
