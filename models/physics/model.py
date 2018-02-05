@@ -31,7 +31,7 @@ class Model(object):
         n_objects = tf.shape(obs_x_true)[2]
 
         if args.pred_only:
-            enc_pred = tf.log(tf.reshape(y_true, [-1, n_objects, 1])) # TODO Hardcoded y_size.
+            enc_pred = tf.reshape(y_true, [-1, n_objects, 1]) # TODO Hardcoded y_size.
             enc_reg = tf.zeros([])
         else:
             with tf.variable_scope("enc_net", reuse=self.reuse):
@@ -132,9 +132,9 @@ class Model(object):
 
         self.summary = tf.summary.merge(self.summaries)
 
-    def save_encs(self, enc_pred, y_true):
+    def save_encs(self, enc_pred, y_true, fname):
         log(self.args.log_dir, "Enc R^2:", get_enc_analysis(enc_pred, y_true))
-        np.savez(join(self.args.log_dir, 'enc_'+self.dset_name+'.npz'), enc=enc_pred, y=y_true)
+        np.savez(join(self.args.log_dir, fname), enc=enc_pred, y=y_true)
 
     def save_ro(self):
         pass
@@ -164,7 +164,7 @@ class TrainModel(Model):
             self.lr_val *= self.args.decay_factor
             log(self.args.log_dir, 'Decaying learning rate to {:.2E}'.format(self.lr_val))
 
-    def run(self, train_ind, sess, writer, epochs_without_dec):
+    def run(self, epoch, train_ind, sess, writer, epochs_without_dec):
         self.set_learning_rate(epochs_without_dec)
         enc_reg_losses, reg_losses, pred_losses = [], [], []
         for ind, (obs_x_true, ro_x_true, y_true) in enumerate(self.dset.get_batches()):
@@ -215,7 +215,7 @@ class TestModel(Model):
         self.build_model(train=False)
         self.epochs_wo_dec = 0
 
-    def run(self, train_ind, sess, writer, save_encs=False, save_ro=False):
+    def run(self, epoch, train_ind, sess, writer, save_encs=False, save_ro=False):
         if save_ro:
             self.save_ro()
             return
@@ -267,7 +267,7 @@ class TestModel(Model):
                     pred_loss))
 
         if save_encs: # Saves and analyzes encodings
-            self.save_encs(enc_pred, y_true)
+            self.save_encs(enc_pred, y_true, 'enc_'+str(epoch)+'_'+self.dset_name+'.npz')
 
         # Update epochs_wo_dec
         if pred_loss < self.best_loss:

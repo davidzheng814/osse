@@ -52,6 +52,9 @@ class PhysicsDataset(object):
         self.n_objects = self.obs_x.shape[2]
         self.state_size = self.obs_x.shape[3]
 
+        # TODO Hacky. 
+        self.y = self.y[:,:self.n_objects]
+
         self.y_size = self.y.shape[1] // self.n_objects
 
         self.y = np.log(self.y)
